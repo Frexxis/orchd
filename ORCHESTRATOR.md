@@ -2,6 +2,10 @@
 
 Operational guide for AI orchestrators.
 
+## Required Reading
+
+- Read `orchestrator-runbook.md` for detailed operational guidance.
+
 ## Objective
 
 Drive the project to completion by coordinating workers through `orchd`.
@@ -12,6 +16,14 @@ You own planning, sequencing, retries, verification, and integration.
 - Orchestrator = the AI currently driving the terminal session.
 - Workers = task executors launched by `orchd` (default runner is from `[worker].runner`).
 - Run autonomously by default; ask the user only when blocked by missing requirements/credentials.
+
+## Project Context
+
+Before planning, scan the repository for existing docs (examples):
+- PHASES.md, PRD.md, ROADMAP.md, TODO.md, BACKLOG.md
+- docs/ or planning directories with requirements, contracts, or runbooks
+
+Use these to understand current state, remaining work, constraints, and acceptance criteria.
 
 ## Core Commands
 
