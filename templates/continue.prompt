@@ -24,7 +24,26 @@ Reason: {resume_reason}
 
 {acceptance_criteria}
 
-## Notes
+## Rules
 
+- Work ONLY within your worktree: {worktree_path}
+- Do not merge into main — the orchestrator handles merges.
+- Do not log or commit PII, tokens, or API keys.
 - If you need user input (credentials, decisions, missing requirements), write it to `.orchd_needs_input.md` at the worktree root and exit.
 - Otherwise: fix issues, run relevant checks, commit, and write TASK_REPORT.md.
+
+## TASK_REPORT.md (Required)
+
+When finished, create TASK_REPORT.md at the worktree root with:
+
+- Summary of changes
+- Files modified/created
+- Evidence in this format:
+  ```
+  EVIDENCE:
+  - CMD: <command>
+    RESULT: PASS|FAIL
+    OUTPUT: <brief summary, max 3 lines>
+  ```
+- Rollback note (what triggers rollback + how to revert)
+- Risks/notes for the orchestrator

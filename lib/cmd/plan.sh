@@ -52,6 +52,25 @@ cmd_plan() {
 		context="$context\n\nDetected project files:$stack_files"
 	fi
 
+	# Scan for project documentation (requirements, phases, roadmaps, etc.)
+	local doc_content=""
+	for f in PHASES.md PRD.md ROADMAP.md TODO.md BACKLOG.md ARCHITECTURE.md DESIGN.md SPEC.md; do
+		if [[ -f "$PROJECT_ROOT/$f" ]]; then
+			doc_content="$doc_content\n--- $f ---\n$(head -200 "$PROJECT_ROOT/$f")"
+		fi
+	done
+	# Also check docs/ directory for planning files
+	if [[ -d "$PROJECT_ROOT/docs" ]]; then
+		while IFS= read -r -d '' df; do
+			local fname
+			fname=$(basename "$df")
+			doc_content="$doc_content\n--- docs/$fname ---\n$(head -100 "$df")"
+		done < <(find "$PROJECT_ROOT/docs" -maxdepth 2 -name '*.md' -print0 2>/dev/null | head -z -n 5)
+	fi
+	if [[ -n "$doc_content" ]]; then
+		context="$context\n\nProject documentation:$doc_content"
+	fi
+
 	# Build the planning prompt from template
 	local template_file="$ORCHD_LIB_DIR/../templates/plan.prompt"
 	if [[ ! -f "$template_file" ]]; then
