@@ -12,14 +12,17 @@ You: "Build a REST API with auth, tests, and CI"
                     ▼
         ┌───────────────────────┐
         │    orchd plan          │  → AI generates task DAG
-        │    orchd spawn --all   │  → agents start in parallel
-        │    orchd board --watch │  → live dashboard
-        │    orchd check --all   │  → quality gates
-        │    orchd merge --all   │  → DAG-ordered merge
+        │    orchd autopilot     │  → fully autonomous loop
         └───────────────────────┘
                     │
                     ▼
             Done. Ship it.
+```
+
+Or step-by-step:
+
+```
+orchd plan → orchd spawn --all → orchd board --watch → orchd check --all → orchd merge --all
 ```
 
 ## Quick Start
@@ -34,7 +37,11 @@ mkdir -p ~/.local/bin && ln -sf "$PWD/bin/orchd" ~/.local/bin/orchd
 cd /path/to/your/project
 orchd init .
 
-# Plan → Spawn → Monitor → Check → Merge
+# Plan → Autopilot (fully autonomous)
+orchd plan "build a REST API with auth, tests, and CI"
+orchd autopilot
+
+# Or step-by-step:
 orchd plan "build a REST API with auth, tests, and CI"
 orchd spawn --all
 orchd board --watch
@@ -75,9 +82,11 @@ orchd merge --all
 | `orchd plan "<description>"` | Use AI to generate a task DAG from a description |
 | `orchd review [ref]` | Run review-only agent on changes or a ref |
 | `orchd spawn <task\|--all>` | Create git worktrees and launch AI agents |
+| `orchd resume <task> [reason...]` | Resume/continue a task in its existing worktree |
 | `orchd board [--watch]` | Live terminal dashboard showing all agent status |
 | `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
 | `orchd merge <task\|--all>` | Merge completed tasks in dependency order |
+| `orchd autopilot [poll_seconds]` | Fully autonomous: spawn/check/merge loop |
 
 ### Utilities
 
@@ -153,11 +162,14 @@ orchd/
 │       ├── board.sh             # orchd board (live TUI dashboard)
 │       ├── check.sh             # orchd check (quality gates)
 │       ├── merge.sh             # orchd merge (DAG-ordered integration)
+│       ├── autopilot.sh         # orchd autopilot (autonomous loop)
+│       ├── resume.sh            # orchd resume (continuation)
 │       ├── doctor.sh            # orchd doctor (effective config)
 │       └── refresh_docs.sh      # orchd refresh-docs (policy docs)
 ├── templates/
 │   ├── plan.prompt              # Prompt template for task planning
 │   ├── kickoff.prompt           # Prompt template for agent kickoff
+│   ├── continue.prompt          # Prompt template for task continuation
 │   └── review.prompt            # Prompt template for review-only tasks
 ├── AGENTS.md                     # Shared agent rules + role routing
 ├── ORCHESTRATOR.md               # Orchestrator-specific rules
@@ -165,7 +177,7 @@ orchd/
 ├── CLAUDE.md                     # Claude Code entry pointer
 ├── orchestrator-runbook.md      # Comprehensive orchestration runbook
 ├── tests/config_get.sh          # Config parser regression tests
-├── tests/smoke.sh               # Smoke tests (40 tests)
+├── tests/smoke.sh               # Smoke tests (54 tests)
 ├── .github/workflows/ci.yml    # CI: ShellCheck + config/smoke tests (Ubuntu/macOS)
 ├── LICENSE
 └── README.md
@@ -187,9 +199,13 @@ Core principles, roles, agent CLI standards, prompt contracts, launch sequences,
 
 3. **`orchd board`** reads task state files and checks tmux sessions to show a live dashboard with status, progress bar, and agent health.
 
-4. **`orchd check`** verifies each task: agent exited, commits exist on branch, TASK_REPORT.md present, lint/test/build pass. Tasks that pass all gates are marked `done`.
+4. **`orchd check`** verifies each task: agent exited, commits exist on branch, TASK_REPORT.md present, lint/test/build pass. Tasks that pass all gates are marked `done`. Tasks that fail are marked `failed`. If the agent writes `.orchd_needs_input.md` in the worktree, the task is marked `needs_input`.
 
 5. **`orchd merge`** performs topological sort on the DAG and merges `done` tasks into the base branch in dependency order, with post-merge regression tests.
+
+6. **`orchd resume`** re-launches an agent for an existing task/worktree with a continuation prompt (useful after a failed check).
+
+7. **`orchd autopilot`** combines all of the above into a single autonomous loop: spawn ready tasks, poll until agents finish, check quality gates, retry failed tasks (bounded + backoff), merge in DAG order, spawn newly unblocked tasks, repeat until all tasks reach a terminal state (`merged`/`failed`/`needs_input`) or deadlock is detected.
 
 ## Requirements
 
@@ -200,13 +216,13 @@ Core principles, roles, agent CLI standards, prompt contracts, launch sequences,
 ## Testing
 
 ```bash
-./tests/smoke.sh              # 34 smoke tests
+./tests/smoke.sh              # 54 smoke tests
 shellcheck bin/orchd lib/*.sh lib/cmd/*.sh tests/smoke.sh
 ```
 
 ## Design Principles
 
-- **Fully autonomous** — from planning to merge, no human intervention required
+- **Fully autonomous** — from planning to merge with minimal human intervention
 - **Runner-agnostic** — plug in any AI CLI tool
 - **Zero framework dependencies** — pure Bash, git, tmux
 - **DAG-first** — dependency graph drives parallelism and merge order

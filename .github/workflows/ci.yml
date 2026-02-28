@@ -26,6 +26,11 @@ jobs:
             lib/cmd/board.sh \
             lib/cmd/check.sh \
             lib/cmd/merge.sh \
+            lib/cmd/doctor.sh \
+            lib/cmd/refresh_docs.sh \
+            lib/cmd/review.sh \
+            lib/cmd/autopilot.sh \
+            lib/cmd/resume.sh \
             tests/config_get.sh \
             tests/smoke.sh
 

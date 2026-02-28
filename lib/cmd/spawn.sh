@@ -103,6 +103,7 @@ _spawn_all_ready() {
 
 	printf 'scanning tasks... (max_parallel=%s, currently_running=%s)\n\n' "$max_parallel" "$running"
 
+	local failed=0
 	while IFS= read -r task_id; do
 		[[ -z "$task_id" ]] && continue
 
@@ -112,8 +113,12 @@ _spawn_all_ready() {
 		fi
 
 		if task_is_ready "$task_id"; then
-			_spawn_single "$task_id" "$runner"
-			spawned=$((spawned + 1))
+			if (_spawn_single "$task_id" "$runner"); then
+				spawned=$((spawned + 1))
+			else
+				printf 'warning: failed to spawn %s, continuing...\n' "$task_id" >&2
+				failed=$((failed + 1))
+			fi
 		else
 			local status
 			status=$(task_status "$task_id")
@@ -123,8 +128,12 @@ _spawn_all_ready() {
 		fi
 	done <<<"$(task_list_ids)"
 
-	printf '\nspawned: %d  skipped (waiting for deps): %d  already running: %d\n' \
+	printf '\nspawned: %d  skipped (waiting for deps): %d  already running: %d' \
 		"$spawned" "$skipped" "$running"
+	if ((failed > 0)); then
+		printf '  failed: %d' "$failed"
+	fi
+	printf '\n'
 }
 
 _build_kickoff_prompt() {

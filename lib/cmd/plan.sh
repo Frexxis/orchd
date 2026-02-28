@@ -105,15 +105,19 @@ _extract_text_from_jsonl() {
 	if command -v jq >/dev/null 2>&1; then
 		jq -r 'select(.type=="item.completed" and .item.type=="agent_message") | .item.text // empty' 2>/dev/null
 	else
-		# Fallback: grep for text-like content
-		grep -oP '"text"\s*:\s*"\K[^"]+' 2>/dev/null || cat
+		# Fallback: portable sed (no grep -oP, which is unavailable on macOS)
+		sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null || cat
 	fi
 }
 
 # --- Parse TASK blocks from plan output ---
+# Supports multi-line DESCRIPTION and ACCEPTANCE fields.
+# A new keyword line or EOF flushes the accumulated multi-line value.
 _parse_plan_output() {
 	local plan_file=$1
 	local current_id=""
+	local current_field=""
+	local current_value=""
 	local count=0
 
 	# Clear existing tasks
@@ -122,38 +126,78 @@ _parse_plan_output() {
 		rm -rf "${TASKS_DIR:?}"/*
 	fi
 
-	while IFS= read -r line; do
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		# Detect keyword lines
+		local keyword=""
 		case "$line" in
-		TASK:*)
-			current_id=$(printf '%s' "$line" | sed 's/^TASK:[[:space:]]*//' | tr -d '[:space:]')
-			if [[ -n "$current_id" ]]; then
-				mkdir -p "$TASKS_DIR/$current_id"
-				task_set "$current_id" "status" "pending"
-				count=$((count + 1))
-			fi
-			;;
-		TITLE:*)
-			[[ -n "$current_id" ]] && task_set "$current_id" "title" "$(printf '%s' "$line" | sed 's/^TITLE:[[:space:]]*//')"
-			;;
-		ROLE:*)
-			[[ -n "$current_id" ]] && task_set "$current_id" "role" "$(printf '%s' "$line" | sed 's/^ROLE:[[:space:]]*//')"
-			;;
-		DEPS:*)
-			local deps_val
-			deps_val=$(printf '%s' "$line" | sed 's/^DEPS:[[:space:]]*//')
-			if [[ "$deps_val" == "none" ]] || [[ -z "$deps_val" ]]; then
-				deps_val=""
-			fi
-			[[ -n "$current_id" ]] && task_set "$current_id" "deps" "$deps_val"
-			;;
-		DESCRIPTION:*)
-			[[ -n "$current_id" ]] && task_set "$current_id" "description" "$(printf '%s' "$line" | sed 's/^DESCRIPTION:[[:space:]]*//')"
-			;;
-		ACCEPTANCE:*)
-			[[ -n "$current_id" ]] && task_set "$current_id" "acceptance" "$(printf '%s' "$line" | sed 's/^ACCEPTANCE:[[:space:]]*//')"
-			;;
+		TASK:*) keyword="TASK" ;;
+		TITLE:*) keyword="TITLE" ;;
+		ROLE:*) keyword="ROLE" ;;
+		DEPS:*) keyword="DEPS" ;;
+		DESCRIPTION:*) keyword="DESCRIPTION" ;;
+		ACCEPTANCE:*) keyword="ACCEPTANCE" ;;
 		esac
+
+		if [[ -n "$keyword" ]]; then
+			# Flush previous multi-line field before processing new keyword
+			if [[ -n "$current_id" ]] && [[ -n "$current_field" ]]; then
+				task_set "$current_id" "$current_field" "$current_value"
+			fi
+			current_field=""
+			current_value=""
+
+			local val
+			val=$(printf '%s' "$line" | sed "s/^${keyword}:[[:space:]]*//")
+
+			case "$keyword" in
+			TASK)
+				current_id=$(printf '%s' "$val" | tr -d '[:space:]')
+				if [[ -n "$current_id" ]]; then
+					mkdir -p "$TASKS_DIR/$current_id"
+					task_set "$current_id" "status" "pending"
+					count=$((count + 1))
+				fi
+				;;
+			TITLE)
+				[[ -n "$current_id" ]] && task_set "$current_id" "title" "$val"
+				;;
+			ROLE)
+				[[ -n "$current_id" ]] && task_set "$current_id" "role" "$val"
+				;;
+			DEPS)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "deps" "$val"
+				;;
+			DESCRIPTION)
+				current_field="description"
+				current_value="$val"
+				;;
+			ACCEPTANCE)
+				current_field="acceptance"
+				current_value="$val"
+				;;
+			esac
+		else
+			# Non-keyword line: append to active multi-line field (preserve blank lines)
+			if [[ -n "$current_field" ]]; then
+				if [[ -n "$current_value" ]]; then
+					current_value+=$'\n'"$line"
+				else
+					current_value="$line"
+					if [[ -z "$line" ]]; then
+						current_value=$'\n'
+					fi
+				fi
+			fi
+		fi
 	done <"$plan_file"
+
+	# Flush any remaining multi-line field at EOF
+	if [[ -n "$current_id" ]] && [[ -n "$current_field" ]]; then
+		task_set "$current_id" "$current_field" "$current_value"
+	fi
 
 	if ((count == 0)); then
 		printf 'warning: no tasks parsed from plan output\n'

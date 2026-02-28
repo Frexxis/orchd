@@ -265,6 +265,7 @@ assert_exit_nonzero "plan without project fails" "$ORCHD" plan "test"
 assert_exit_nonzero "spawn without project fails" "$ORCHD" spawn --all
 assert_exit_nonzero "check without project fails" "$ORCHD" check --all
 assert_exit_nonzero "merge without project fails" "$ORCHD" merge --all
+assert_exit_nonzero "resume without project fails" "$ORCHD" resume foo
 
 printf '\n[8] Board command (in initialized project)\n'
 # Board should work in an initialized project (shows empty board)
@@ -282,6 +283,8 @@ assert_output_contains "help shows spawn" "spawn" "$ORCHD" --help
 assert_output_contains "help shows board" "board" "$ORCHD" --help
 assert_output_contains "help shows check" "check" "$ORCHD" --help
 assert_output_contains "help shows merge" "merge" "$ORCHD" --help
+assert_output_contains "help shows resume" "resume" "$ORCHD" --help
+assert_output_contains "help shows autopilot" "autopilot" "$ORCHD" --help
 assert_output_contains "help shows doctor" "doctor" "$ORCHD" --help
 assert_output_contains "help shows refresh-docs" "refresh-docs" "$ORCHD" --help
 
@@ -305,7 +308,22 @@ else
 fi
 assert_task_status "merged task marked as merged" "$INIT_DIR" "merge-base-safety" "merged"
 
-printf '\n[12] Merge --all stops after post-merge test failure\n'
+printf '\n[12] Autopilot merges done tasks\n'
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+run_in_dir "$INIT_DIR" git checkout -q -b "agent-autopilot-merge"
+printf 'autopilot-merge\n' >"$INIT_DIR/autopilot_merge.txt"
+run_in_dir "$INIT_DIR" git add "autopilot_merge.txt"
+run_in_dir "$INIT_DIR" git commit -q -m "test: autopilot merge"
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+
+mkdir -p "$INIT_DIR/.orchd/tasks/autopilot-merge"
+printf 'done\n' >"$INIT_DIR/.orchd/tasks/autopilot-merge/status"
+printf 'agent-autopilot-merge\n' >"$INIT_DIR/.orchd/tasks/autopilot-merge/branch"
+
+assert_exit_0 "autopilot merges done task" run_in_dir "$INIT_DIR" "$ORCHD" autopilot 0
+assert_task_status "autopilot task marked as merged" "$INIT_DIR" "autopilot-merge" "merged"
+
+printf '\n[13] Merge --all stops after post-merge test failure\n'
 set_test_cmd "$INIT_DIR/.orchd.toml" "false"
 
 run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"

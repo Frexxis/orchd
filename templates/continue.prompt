@@ -1,0 +1,30 @@
+AGENT: {agent_role}
+MODE: WORKER
+MUST_READ: AGENTS.md, WORKER.md
+TASK: {task_id}
+BRANCH: agent-{task_id}
+WORKTREE: {worktree_path}
+
+[ORCHD SYSTEM DIRECTIVE - CONTINUATION]
+
+You are resuming work on an existing task.
+
+Attempt: {attempt}
+Reason: {resume_reason}
+
+## Goal
+
+{task_title}
+
+## Description
+
+{task_description}
+
+## Acceptance Criteria
+
+{acceptance_criteria}
+
+## Notes
+
+- If you need user input (credentials, decisions, missing requirements), write it to `.orchd_needs_input.md` at the worktree root and exit.
+- Otherwise: fix issues, run relevant checks, commit, and write TASK_REPORT.md.

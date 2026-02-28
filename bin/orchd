@@ -47,6 +47,10 @@ source "$ORCHD_LIB_DIR/cmd/merge.sh"
 source "$ORCHD_LIB_DIR/cmd/doctor.sh"
 # shellcheck source=../lib/cmd/refresh_docs.sh
 source "$ORCHD_LIB_DIR/cmd/refresh_docs.sh"
+# shellcheck source=../lib/cmd/resume.sh
+source "$ORCHD_LIB_DIR/cmd/resume.sh"
+# shellcheck source=../lib/cmd/autopilot.sh
+source "$ORCHD_LIB_DIR/cmd/autopilot.sh"
 
 # --- Usage ---
 usage() {
@@ -61,6 +65,8 @@ Orchestration commands:
   orchd board  [--watch]               Live agent status dashboard
   orchd check  <task-id> | --all       Run quality gates on tasks
   orchd merge  <task-id> | --all       Merge completed tasks (DAG order)
+  orchd resume <task-id> [reason...]    Resume/continue a task in its worktree
+  orchd autopilot [poll_seconds]        Fully autonomous: spawn/check/merge loop
   orchd doctor [dir]                   Show effective config and auto-detect
   orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR docs
 
@@ -78,6 +84,8 @@ Environment:
 Workflow:
   orchd init .
   orchd plan "build a REST API with auth, tests, and CI"
+  orchd autopilot                        # fully autonomous
+  # or step-by-step:
   orchd spawn --all
   orchd board --watch
   orchd check --all
@@ -194,11 +202,17 @@ case "$cmd" in
   merge)
     cmd_merge "$@"
     ;;
+  resume)
+    cmd_resume "$@"
+    ;;
   doctor)
     cmd_doctor "$@"
     ;;
   refresh-docs|refresh_docs)
     cmd_refresh_docs "$@"
+    ;;
+  autopilot)
+    cmd_autopilot "$@"
     ;;
 
   # === Monitor commands (original) ===
