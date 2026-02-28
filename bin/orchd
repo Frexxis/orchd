@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+orchd - tiny always-on orchestration monitor (tmux)
+
+Usage:
+  orchd start [repo_dir] [interval_seconds]
+  orchd attach [session]
+  orchd stop [session]
+  orchd list
+  orchd status [session]
+
+Environment:
+  ORCHD_BRANCH_REGEX   Regex for remote refs to track (default: ^origin/(main|agent-|orchestrator/))
+  ORCHD_STATE_DIR      State directory (default: $HOME/.orchd)
+
+Notes:
+  - Monitor only: does not merge/commit/push.
+  - Writes snapshots under ORCHD_STATE_DIR/<session>/
+EOF
+}
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+cmd=${1:-}
+shift || true
+
+state_dir_default() {
+  printf '%s\n' "${ORCHD_STATE_DIR:-$HOME/.orchd}"
+}
+
+session_default() {
+  local repo_dir=$1
+  local base
+  base=$(basename "$repo_dir")
+  printf '%s\n' "orchd-${base}"
+}
+
+tick() {
+  local repo_dir=$1
+  local session=$2
+
+  local state_dir
+  state_dir=$(state_dir_default)
+  mkdir -p "$state_dir/$session"
+
+  local ts
+  ts=$(date -Is)
+
+  # Fetch can fail (offline); don't crash the daemon.
+  git -C "$repo_dir" fetch --all --prune >/dev/null 2>&1 || true
+
+  {
+    printf '== %s ==\n' "$ts"
+    git -C "$repo_dir" status -sb || true
+    printf '\n'
+  } >"$state_dir/$session/snapshot.txt"
+
+  local branch_regex
+  branch_regex=${ORCHD_BRANCH_REGEX:-'^origin/(main|agent-|orchestrator/)'}
+
+  git -C "$repo_dir" for-each-ref refs/remotes/origin \
+    --format='%(refname:short) %(objectname:short)' \
+    | awk -v re="$branch_regex" '$1 ~ re { print $0 }' \
+    | sort >"$state_dir/$session/refs.current"
+
+  if [[ -f "$state_dir/$session/refs.last" ]]; then
+    if ! cmp -s "$state_dir/$session/refs.last" "$state_dir/$session/refs.current"; then
+      {
+        printf '== %s ==\n' "$ts"
+        diff -u "$state_dir/$session/refs.last" "$state_dir/$session/refs.current" || true
+        printf '\n'
+      } >>"$state_dir/$session/changes.log"
+    fi
+  fi
+
+  mv -f "$state_dir/$session/refs.current" "$state_dir/$session/refs.last"
+}
+
+run_daemon() {
+  local repo_dir=$1
+  local interval=$2
+  local session=$3
+
+  while true; do
+    tick "$repo_dir" "$session" || true
+    sleep "$interval"
+  done
+}
+
+case "$cmd" in
+  start)
+    repo_dir=${1:-$PWD}
+    interval=${2:-30}
+    [[ -d "$repo_dir" ]] || die "repo_dir not found: $repo_dir"
+    [[ "$interval" =~ ^[0-9]+$ ]] || die "interval must be integer seconds"
+    session=${ORCHD_SESSION:-$(session_default "$repo_dir")}
+
+    tmux has-session -t "$session" 2>/dev/null && die "already running: $session"
+    tmux new -d -s "$session" "$HOME/.local/bin/orchd __run "$repo_dir" "$interval" "$session""
+    printf '%s\n' "started: $session (repo=$repo_dir interval=${interval}s)"
+    ;;
+  __run)
+    repo_dir=${1:?}
+    interval=${2:?}
+    session=${3:?}
+    run_daemon "$repo_dir" "$interval" "$session"
+    ;;
+  attach)
+    session=${1:-}
+    [[ -n "$session" ]] || die "session required"
+    tmux attach -t "$session"
+    ;;
+  stop)
+    session=${1:-}
+    [[ -n "$session" ]] || die "session required"
+    tmux kill-session -t "$session"
+    printf '%s\n' "stopped: $session"
+    ;;
+  list)
+    tmux list-sessions -F '#{session_name}' 2>/dev/null | awk '/^orchd-/' || true
+    ;;
+  status)
+    session=${1:-}
+    [[ -n "$session" ]] || die "session required"
+    if tmux has-session -t "$session" 2>/dev/null; then
+      printf '%s\n' "running: $session"
+      state_dir=$(state_dir_default)
+      if [[ -f "$state_dir/$session/snapshot.txt" ]]; then
+        printf '\n'
+        sed -n '1,12p' "$state_dir/$session/snapshot.txt" || true
+      fi
+    else
+      die "not running: $session"
+    fi
+    ;;
+  -h|--help|help|'')
+    usage
+    ;;
+  *)
+    die "unknown command: $cmd (try --help)"
+    ;;
+esac
