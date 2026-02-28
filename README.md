@@ -114,7 +114,8 @@ base_branch = "main"
 runner = "claude"          # or: codex, opencode, aider, custom
 max_parallel = 3           # max concurrent agents
 worktree_dir = ".worktrees"
-monitor_interval = 30
+monitor_interval = 30      # monitor daemon tick (legacy)
+board_refresh = 5          # orchd board --watch refresh seconds
 
 [quality]
 lint_cmd = "npm run lint"  # run during orchd check
@@ -144,7 +145,7 @@ orchd/
 │   ├── plan.prompt              # Prompt template for task planning
 │   └── kickoff.prompt           # Prompt template for agent kickoff
 ├── orchestrator-runbook.md      # Comprehensive orchestration runbook
-├── tests/smoke.sh               # Smoke tests (34 tests)
+├── tests/smoke.sh               # Smoke tests (40 tests)
 ├── .github/workflows/ci.yml    # CI: ShellCheck + smoke tests
 ├── LICENSE
 └── README.md

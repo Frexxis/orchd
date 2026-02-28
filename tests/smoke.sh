@@ -72,6 +72,55 @@ run_in_dir() {
 	(cd "$dir" && "$@")
 }
 
+set_test_cmd() {
+	local cfg=$1
+	local cmd=$2
+	local tmp
+	tmp=$(mktemp)
+	awk -v cmd="$cmd" '
+		/^[[:space:]]*test_cmd[[:space:]]*=/ {
+			print "test_cmd = \"" cmd "\""
+			next
+		}
+		{ print }
+	' "$cfg" >"$tmp"
+	mv "$tmp" "$cfg"
+}
+
+assert_task_status() {
+	local desc=$1
+	local repo_dir=$2
+	local task_id=$3
+	local expected=$4
+	local file="$repo_dir/.orchd/tasks/$task_id/status"
+
+	if [[ ! -f "$file" ]]; then
+		fail "$desc (missing $file)"
+		return
+	fi
+
+	local actual
+	actual=$(<"$file")
+	if [[ "$actual" == "$expected" ]]; then
+		pass "$desc"
+	else
+		fail "$desc (expected '$expected', got '$actual')"
+	fi
+}
+
+get_base_branch() {
+	local repo_dir=$1
+	local cfg="$repo_dir/.orchd.toml"
+	awk -F '=' '
+		/^[[:space:]]*base_branch[[:space:]]*=/ {
+			val = $2
+			gsub(/^[[:space:]]*"?|"?[[:space:]]*$/, "", val)
+			print val
+			exit
+		}
+	' "$cfg"
+}
+
 cleanup() {
 	# Stop any test sessions
 	tmux kill-session -t "orchd-smoketest" 2>/dev/null || true
@@ -162,6 +211,10 @@ git -C "$INIT_DIR" commit --allow-empty -m "init" -q
 
 assert_exit_0 "init succeeds" "$ORCHD" init "$INIT_DIR"
 assert_exit_nonzero "double init is rejected" "$ORCHD" init "$INIT_DIR"
+BASE_BRANCH=$(get_base_branch "$INIT_DIR")
+if [[ -z "$BASE_BRANCH" ]]; then
+	BASE_BRANCH="main"
+fi
 
 # Verify files were created
 if [[ -f "$INIT_DIR/.orchd.toml" ]]; then
@@ -200,6 +253,52 @@ assert_output_contains "help shows spawn" "spawn" "$ORCHD" --help
 assert_output_contains "help shows board" "board" "$ORCHD" --help
 assert_output_contains "help shows check" "check" "$ORCHD" --help
 assert_output_contains "help shows merge" "merge" "$ORCHD" --help
+
+printf '\n[10] Merge checks out base branch before merge\n'
+run_in_dir "$INIT_DIR" git checkout -q -b "agent-merge-base-safety"
+printf 'merge-base-safety\n' >"$INIT_DIR/merge_base_safety.txt"
+run_in_dir "$INIT_DIR" git add "merge_base_safety.txt"
+run_in_dir "$INIT_DIR" git commit -q -m "test: merge base safety"
+
+mkdir -p "$INIT_DIR/.orchd/tasks/merge-base-safety"
+printf 'done\n' >"$INIT_DIR/.orchd/tasks/merge-base-safety/status"
+printf 'agent-merge-base-safety\n' >"$INIT_DIR/.orchd/tasks/merge-base-safety/branch"
+
+assert_exit_0 "merge single succeeds from non-base HEAD" run_in_dir "$INIT_DIR" "$ORCHD" merge "merge-base-safety"
+
+current_branch=$(run_in_dir "$INIT_DIR" git rev-parse --abbrev-ref HEAD)
+if [[ "$current_branch" == "$BASE_BRANCH" ]]; then
+	pass "merge leaves repository on base branch"
+else
+	fail "merge leaves repository on base branch (expected '$BASE_BRANCH', got '$current_branch')"
+fi
+assert_task_status "merged task marked as merged" "$INIT_DIR" "merge-base-safety" "merged"
+
+printf '\n[11] Merge --all stops after post-merge test failure\n'
+set_test_cmd "$INIT_DIR/.orchd.toml" "false"
+
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+run_in_dir "$INIT_DIR" git checkout -q -b "agent-a-fail-stop"
+printf 'a-fail-stop\n' >"$INIT_DIR/a_fail_stop.txt"
+run_in_dir "$INIT_DIR" git add "a_fail_stop.txt"
+run_in_dir "$INIT_DIR" git commit -q -m "test: fail stop A"
+
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+run_in_dir "$INIT_DIR" git checkout -q -b "agent-z-fail-stop"
+printf 'z-fail-stop\n' >"$INIT_DIR/z_fail_stop.txt"
+run_in_dir "$INIT_DIR" git add "z_fail_stop.txt"
+run_in_dir "$INIT_DIR" git commit -q -m "test: fail stop Z"
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+
+mkdir -p "$INIT_DIR/.orchd/tasks/a-fail-stop" "$INIT_DIR/.orchd/tasks/z-fail-stop"
+printf 'done\n' >"$INIT_DIR/.orchd/tasks/a-fail-stop/status"
+printf 'agent-a-fail-stop\n' >"$INIT_DIR/.orchd/tasks/a-fail-stop/branch"
+printf 'done\n' >"$INIT_DIR/.orchd/tasks/z-fail-stop/status"
+printf 'agent-z-fail-stop\n' >"$INIT_DIR/.orchd/tasks/z-fail-stop/branch"
+
+assert_exit_nonzero "merge --all fails when post-merge tests fail" run_in_dir "$INIT_DIR" "$ORCHD" merge --all
+assert_task_status "first failing task marked failed" "$INIT_DIR" "a-fail-stop" "failed"
+assert_task_status "later task remains unmerged" "$INIT_DIR" "z-fail-stop" "done"
 
 # --- Summary ---
 
