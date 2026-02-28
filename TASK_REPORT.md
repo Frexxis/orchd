@@ -2,12 +2,12 @@
 
 ## Summary
 
-- Added `orchestrator-runbook.md` to generated agent docs so projects receive the full orchestration runbook.
-- Expanded `ORCHESTRATOR.md` to require runbook reading and project-context scanning before planning.
-- Added a fallback runbook stub for installs missing the runbook file.
+- Required orchestrators to read `orchestrator-runbook.md` via AGENTS role routing.
+- Added an explicit runbook ACK requirement for orchestrators.
 
 ## Files Modified/Created
 
+- AGENTS.md
 - lib/core.sh
 - ORCHESTRATOR.md
 

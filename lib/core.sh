@@ -271,7 +271,7 @@ Shared rules for all AI agents in this repository.
 ## Role Routing (Mandatory)
 
 1. Always read this file before any action.
-2. If MODE is ORCHESTRATOR, you MUST read ORCHESTRATOR.md next.
+2. If MODE is ORCHESTRATOR, you MUST read ORCHESTRATOR.md and orchestrator-runbook.md next.
 3. If MODE is WORKER, you MUST read WORKER.md next.
 4. If MODE is REVIEWER, follow the review task instructions and do not change code unless explicitly requested.
 5. If MODE is not provided, infer it from the task:
@@ -297,6 +297,8 @@ Shared rules for all AI agents in this repository.
 - Your first response must start with:
   - ACK: AGENTS.md read
   - and ACK: ORCHESTRATOR.md read OR ACK: WORKER.md read OR ACK: REVIEWER mode
+- If MODE is ORCHESTRATOR, also include:
+  - ACK: orchestrator-runbook.md read
 - Exception: If strict output formatting is required, do not add ACK lines.
 EOF
 		;;
@@ -377,12 +379,48 @@ Operational rules for task-executing agents.
 - Do not modify unrelated files or change project-wide configs.
 - Do not merge to the base branch; the orchestrator handles merges.
 - Do not expose secrets or credentials.
+- Do not log or commit PII, tokens, or API keys.
 
 ## Quality Expectations
 
 - Run the most relevant lint/test/build commands available.
 - If a command cannot run, explain why in TASK_REPORT.md.
 - Keep commits focused with clear messages.
+- Add tests for new functionality when possible.
+
+## Evidence Format (Mandatory)
+
+All test/lint/build results in TASK_REPORT.md must use this format:
+
+```text
+EVIDENCE:
+- CMD: <command>
+  RESULT: PASS|FAIL
+  OUTPUT: <brief summary, max 3 lines>
+```
+
+## Rollback Note
+
+Include a rollback section in TASK_REPORT.md:
+
+- What triggers a rollback (e.g. test regression, contract break)
+- How to revert (e.g. `git revert <sha>`, remove migration)
+
+## Definition of Done
+
+A task is `done` only when ALL of these are true:
+
+1. All acceptance criteria are met.
+2. Lint passes (no new warnings).
+3. Relevant tests pass.
+4. No out-of-scope changes.
+5. TASK_REPORT.md is complete with evidence + rollback note.
+6. Commits are clean and focused.
+
+## Blocker Protocol
+
+- If blocked, create `.orchd_needs_input.md` at the worktree root explaining what is needed.
+- If a dependency is missing, document it and exit cleanly.
 
 ## Required Deliverable
 
@@ -390,8 +428,8 @@ Create TASK_REPORT.md at the worktree root with:
 
 - Summary of changes
 - Files modified/created
-- Tests run (commands + results)
-- Evidence notes (pass/fail)
+- Evidence (using the format above)
+- Rollback note
 - Risks/notes
 EOF
 		;;
