@@ -73,10 +73,18 @@ orchd merge --all
 |---|---|
 | `orchd init [dir]` | Initialize orchd in a project (creates `.orchd.toml`) |
 | `orchd plan "<description>"` | Use AI to generate a task DAG from a description |
+| `orchd review [ref]` | Run review-only agent on changes or a ref |
 | `orchd spawn <task\|--all>` | Create git worktrees and launch AI agents |
 | `orchd board [--watch]` | Live terminal dashboard showing all agent status |
 | `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
 | `orchd merge <task\|--all>` | Merge completed tasks in dependency order |
+
+### Utilities
+
+| Command | Description |
+|---|---|
+| `orchd doctor [dir]` | Show effective config and auto-detected quality commands |
+| `orchd refresh-docs [dir]` | Refresh AGENTS/WORKER/ORCHESTRATOR/CLAUDE docs |
 
 ### Monitor (background repo watcher)
 
@@ -126,6 +134,9 @@ build_cmd = "npm run build"
 # custom_runner_cmd = "my-agent --prompt {prompt} --dir {worktree}"
 ```
 
+If `lint_cmd`, `test_cmd`, or `build_cmd` are left empty, `orchd check` will
+auto-detect suitable commands based on the project stack.
+
 ## Project Structure
 
 ```
@@ -137,13 +148,21 @@ orchd/
 │   └── cmd/
 │       ├── init.sh              # orchd init
 │       ├── plan.sh              # orchd plan (AI task DAG generation)
+│       ├── review.sh            # orchd review (review-only)
 │       ├── spawn.sh             # orchd spawn (worktree + agent launch)
 │       ├── board.sh             # orchd board (live TUI dashboard)
 │       ├── check.sh             # orchd check (quality gates)
-│       └── merge.sh             # orchd merge (DAG-ordered integration)
+│       ├── merge.sh             # orchd merge (DAG-ordered integration)
+│       ├── doctor.sh            # orchd doctor (effective config)
+│       └── refresh_docs.sh      # orchd refresh-docs (policy docs)
 ├── templates/
 │   ├── plan.prompt              # Prompt template for task planning
-│   └── kickoff.prompt           # Prompt template for agent kickoff
+│   ├── kickoff.prompt           # Prompt template for agent kickoff
+│   └── review.prompt            # Prompt template for review-only tasks
+├── AGENTS.md                     # Shared agent rules + role routing
+├── ORCHESTRATOR.md               # Orchestrator-specific rules
+├── WORKER.md                     # Task agent rules
+├── CLAUDE.md                     # Claude Code entry pointer
 ├── orchestrator-runbook.md      # Comprehensive orchestration runbook
 ├── tests/config_get.sh          # Config parser regression tests
 ├── tests/smoke.sh               # Smoke tests (40 tests)

@@ -235,6 +235,30 @@ else
 	fail ".gitignore not updated"
 fi
 
+if [[ -f "$INIT_DIR/AGENTS.md" ]]; then
+	pass "AGENTS.md created"
+else
+	fail "AGENTS.md not created"
+fi
+
+if [[ -f "$INIT_DIR/ORCHESTRATOR.md" ]]; then
+	pass "ORCHESTRATOR.md created"
+else
+	fail "ORCHESTRATOR.md not created"
+fi
+
+if [[ -f "$INIT_DIR/WORKER.md" ]]; then
+	pass "WORKER.md created"
+else
+	fail "WORKER.md not created"
+fi
+
+if [[ -f "$INIT_DIR/CLAUDE.md" ]]; then
+	pass "CLAUDE.md created"
+else
+	fail "CLAUDE.md not created"
+fi
+
 printf '\n[7] Orchestration commands (no-project validation)\n'
 # These should fail gracefully when not in an orchd project
 assert_exit_nonzero "plan without project fails" "$ORCHD" plan "test"
@@ -246,15 +270,22 @@ printf '\n[8] Board command (in initialized project)\n'
 # Board should work in an initialized project (shows empty board)
 assert_exit_0 "board in init dir" run_in_dir "$INIT_DIR" "$ORCHD" board
 
-printf '\n[9] Help includes orchestration commands\n'
+printf '\n[9] Utility commands (in initialized project)\n'
+assert_exit_0 "doctor in init dir" run_in_dir "$INIT_DIR" "$ORCHD" doctor
+assert_exit_0 "refresh-docs in init dir" run_in_dir "$INIT_DIR" "$ORCHD" refresh-docs
+
+printf '\n[10] Help includes orchestration commands\n'
 assert_output_contains "help shows init" "init" "$ORCHD" --help
 assert_output_contains "help shows plan" "plan" "$ORCHD" --help
+assert_output_contains "help shows review" "review" "$ORCHD" --help
 assert_output_contains "help shows spawn" "spawn" "$ORCHD" --help
 assert_output_contains "help shows board" "board" "$ORCHD" --help
 assert_output_contains "help shows check" "check" "$ORCHD" --help
 assert_output_contains "help shows merge" "merge" "$ORCHD" --help
+assert_output_contains "help shows doctor" "doctor" "$ORCHD" --help
+assert_output_contains "help shows refresh-docs" "refresh-docs" "$ORCHD" --help
 
-printf '\n[10] Merge checks out base branch before merge\n'
+printf '\n[11] Merge checks out base branch before merge\n'
 run_in_dir "$INIT_DIR" git checkout -q -b "agent-merge-base-safety"
 printf 'merge-base-safety\n' >"$INIT_DIR/merge_base_safety.txt"
 run_in_dir "$INIT_DIR" git add "merge_base_safety.txt"
@@ -274,7 +305,7 @@ else
 fi
 assert_task_status "merged task marked as merged" "$INIT_DIR" "merge-base-safety" "merged"
 
-printf '\n[11] Merge --all stops after post-merge test failure\n'
+printf '\n[12] Merge --all stops after post-merge test failure\n'
 set_test_cmd "$INIT_DIR/.orchd.toml" "false"
 
 run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"

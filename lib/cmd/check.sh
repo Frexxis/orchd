@@ -98,9 +98,52 @@ _check_single() {
 		failed=$((failed + 1))
 	fi
 
-	# 5. Run lint command if configured
-	local lint_cmd
+	# 5. Resolve quality commands (config or auto-detect)
+	local lint_cmd test_cmd build_cmd
+	local auto_detect_used=false
+
 	lint_cmd=$(config_get "lint_cmd" "")
+	test_cmd=$(config_get "test_cmd" "")
+	build_cmd=$(config_get "build_cmd" "")
+
+	if [[ -z "$lint_cmd" || -z "$test_cmd" || -z "$build_cmd" ]]; then
+		auto_detect_used=true
+		quality_detect_cmds "$worktree"
+
+		if [[ -z "$lint_cmd" ]]; then
+			lint_cmd="$ORCHD_DETECTED_LINT_CMD"
+		fi
+		if [[ -z "$test_cmd" ]]; then
+			test_cmd="$ORCHD_DETECTED_TEST_CMD"
+		fi
+		if [[ -z "$build_cmd" ]]; then
+			build_cmd="$ORCHD_DETECTED_BUILD_CMD"
+		fi
+	fi
+
+	if $auto_detect_used; then
+		if [[ -n "$ORCHD_DETECTED_STACK" ]]; then
+			printf '  [INFO] auto-detected stack: %s\n' "$ORCHD_DETECTED_STACK"
+		else
+			printf '  [WARN] auto-detect could not determine stack; set lint_cmd/test_cmd/build_cmd in .orchd.toml\n'
+		fi
+		if [[ -z "$lint_cmd" ]]; then
+			printf '  [WARN] no lint command detected\n'
+		fi
+		if [[ -z "$test_cmd" ]]; then
+			printf '  [WARN] no test command detected\n'
+		fi
+		if [[ -z "$build_cmd" ]]; then
+			printf '  [WARN] no build command detected\n'
+		fi
+		if [[ -n "$ORCHD_DETECTED_NOTES" ]]; then
+			while IFS= read -r line; do
+				[[ -n "$line" ]] && printf '  [NOTE] %s\n' "$line"
+			done <<<"$ORCHD_DETECTED_NOTES"
+		fi
+	fi
+
+	# 6. Run lint command if configured
 	if [[ -n "$lint_cmd" ]]; then
 		total=$((total + 1))
 		printf '  [RUN]  lint: %s\n' "$lint_cmd"
@@ -113,9 +156,7 @@ _check_single() {
 		fi
 	fi
 
-	# 6. Run test command if configured
-	local test_cmd
-	test_cmd=$(config_get "test_cmd" "")
+	# 7. Run test command if configured
 	if [[ -n "$test_cmd" ]]; then
 		total=$((total + 1))
 		printf '  [RUN]  test: %s\n' "$test_cmd"
@@ -128,9 +169,7 @@ _check_single() {
 		fi
 	fi
 
-	# 7. Run build command if configured
-	local build_cmd
-	build_cmd=$(config_get "build_cmd" "")
+	# 8. Run build command if configured
 	if [[ -n "$build_cmd" ]]; then
 		total=$((total + 1))
 		printf '  [RUN]  build: %s\n' "$build_cmd"

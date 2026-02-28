@@ -1,8 +1,18 @@
 AGENT: {agent_role}
+MODE: WORKER
+MUST_READ: AGENTS.md, WORKER.md
 TASK: {task_id}
 BRANCH: agent-{task_id}
 WORKTREE: {worktree_path}
 STATUS: GO
+
+## Required Reading
+
+- Read AGENTS.md
+- Then read WORKER.md
+- Start your first response with:
+  - ACK: AGENTS.md read
+  - ACK: WORKER.md read
 
 ## Goal
 

@@ -33,6 +33,8 @@ source "$ORCHD_LIB_DIR/runner.sh"
 source "$ORCHD_LIB_DIR/cmd/init.sh"
 # shellcheck source=../lib/cmd/plan.sh
 source "$ORCHD_LIB_DIR/cmd/plan.sh"
+# shellcheck source=../lib/cmd/review.sh
+source "$ORCHD_LIB_DIR/cmd/review.sh"
 # shellcheck source=../lib/cmd/spawn.sh
 source "$ORCHD_LIB_DIR/cmd/spawn.sh"
 # shellcheck source=../lib/cmd/board.sh
@@ -41,6 +43,10 @@ source "$ORCHD_LIB_DIR/cmd/board.sh"
 source "$ORCHD_LIB_DIR/cmd/check.sh"
 # shellcheck source=../lib/cmd/merge.sh
 source "$ORCHD_LIB_DIR/cmd/merge.sh"
+# shellcheck source=../lib/cmd/doctor.sh
+source "$ORCHD_LIB_DIR/cmd/doctor.sh"
+# shellcheck source=../lib/cmd/refresh_docs.sh
+source "$ORCHD_LIB_DIR/cmd/refresh_docs.sh"
 
 # --- Usage ---
 usage() {
@@ -50,10 +56,13 @@ orchd - autonomous AI agent orchestrator
 Orchestration commands:
   orchd init   [dir] [description]     Initialize orchd in a project
   orchd plan   "<description>"         Generate task DAG with AI
+  orchd review [ref]                   Run review-only agent on changes
   orchd spawn  <task-id> | --all       Create worktrees & launch agents
   orchd board  [--watch]               Live agent status dashboard
   orchd check  <task-id> | --all       Run quality gates on tasks
   orchd merge  <task-id> | --all       Merge completed tasks (DAG order)
+  orchd doctor [dir]                   Show effective config and auto-detect
+  orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR docs
 
 Monitor commands:
   orchd start  [repo_dir] [interval]   Start background repo monitor
@@ -170,6 +179,9 @@ case "$cmd" in
   plan)
     cmd_plan "$@"
     ;;
+  review)
+    cmd_review "$@"
+    ;;
   spawn)
     cmd_spawn "$@"
     ;;
@@ -181,6 +193,12 @@ case "$cmd" in
     ;;
   merge)
     cmd_merge "$@"
+    ;;
+  doctor)
+    cmd_doctor "$@"
+    ;;
+  refresh-docs|refresh_docs)
+    cmd_refresh_docs "$@"
     ;;
 
   # === Monitor commands (original) ===

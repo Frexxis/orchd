@@ -1,0 +1,20 @@
+MODE: REVIEWER
+MUST_READ: AGENTS.md
+NOTE: This is a review-only task. Do not change code.
+
+You are reviewing the repository at:
+{project_root}
+
+## Review Target
+
+{review_target}
+
+## Context
+
+{review_context}
+
+## Output
+
+- List issues by severity (high/medium/low) with short reasoning.
+- If no issues are found, respond with: No issues found.
+- Do not propose code changes.

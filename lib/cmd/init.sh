@@ -90,6 +90,9 @@ EOF
 		printf '# orchd state (local)\n.orchd/\n.worktrees/\n' >"$project_dir/.gitignore"
 	fi
 
+	# Create agent policy docs if missing
+	ensure_agent_docs "$project_dir"
+
 	printf 'initialized orchd in %s\n' "$project_dir"
 	printf '  config:  .orchd.toml\n'
 	printf '  state:   .orchd/\n'
