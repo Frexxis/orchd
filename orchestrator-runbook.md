@@ -1,62 +1,62 @@
 # Orchestrator Runbook
 
-Bu belge, multi-agent delivery modelinin tek sorumlu orchestrator tarafindan en az surtunme ile nasil yonetilecegini tanimlar.
-Hedef: hizli ama guvenli ilerleme, dusuk cakisma, yuksek kalite kaniti.
+This document defines how a multi-agent delivery model is managed by a single responsible orchestrator with minimal friction.
+Goal: fast but safe progress, low conflict rate, high quality evidence.
 
-Not: Bu runbook arac-agnostiktir. Ornekler Codex CLI ile verilir; baska bir agent runner kullaniyorsaniz komutlari esdegeriyle degistirin.
+Note: This runbook is tool-agnostic. Examples use Codex CLI; if you use a different agent runner, substitute the commands with their equivalents.
 
-## 1) Ana Ilkeler
+## 1) Core Principles
 
-1. **Bridge-free orchestration:** Prompt dagitimi, takip, toplama, merge ve kapanis tek elde orchestrator'da olur.
-2. **Dependency-first planning:** Paralellesme, yalnizca bagimsiz islerde kullanilir.
-3. **Evidence before merge:** Test/lint/rapor kaniti olmayan hicbir is `done` olmaz.
-4. **Single source of truth:** Backlog + live-board + memory-bank her merge sonrasinda senkron kalir.
-5. **Reversible integration:** Her adim rollback dusunulerek atilir.
+1. **Bridge-free orchestration:** Prompt distribution, tracking, collection, merge, and closeout are all owned by a single orchestrator.
+2. **Dependency-first planning:** Parallelization is used only for independent tasks.
+3. **Evidence before merge:** No task is marked `done` without test/lint/report evidence.
+4. **Single source of truth:** Backlog + live board + memory bank stay in sync after every merge.
+5. **Reversible integration:** Every step is taken with rollback in mind.
 
-## 2) Roller ve Sorumluluk Sinirlari
+## 2) Roles and Responsibility Boundaries
 
-- **Orchestrator:** Scope kirilimi, DAG (bagimlilik grafigi), merge queue, kalite kapisi, kapanis karari.
-- **Domain Agent(lar)i:** Ozellik implementasyonu (uygulama, API, veri, AI/memory vb.).
-- **Quality Agent(lar)i:** Regression, contract, consistency, CI kalite kapilari.
-- **Ops Agent(lar)i:** Live board, queue, blocker, conflict watchlist takibi.
+- **Orchestrator:** Scope breakdown, DAG (dependency graph), merge queue, quality gate, closeout decision.
+- **Domain Agent(s):** Feature implementation (application, API, data, AI/memory, etc.).
+- **Quality Agent(s):** Regression, contract, consistency, CI quality gates.
+- **Ops Agent(s):** Live board, queue, blocker, conflict watchlist tracking.
 
-Not: release-note/changelog ve final memory/plan konsolidasyonu orchestrator sorumlulugundadir.
+Note: Release notes/changelog and final memory/plan consolidation are the orchestrator's responsibility.
 
-## 3) Codex CLI Operasyon Standardi
+## 3) Codex CLI Operational Standard
 
-Bu runbook'ta agent oturumlari Codex CLI ile non-interactive yurutulur.
-Ortama ozel (PATH, shell init, proxy, token) ayarlar bu belgeye degil, yerel kurulum notlarina yazilir.
+In this runbook, agent sessions are executed non-interactively via Codex CLI.
+Environment-specific settings (PATH, shell init, proxy, token) belong in local setup notes, not in this document.
 
-### 3.1 CLI cagrisi (genel kural)
+### 3.1 CLI Invocation (General Rule)
 
-Varsayilan kullanim `codex` komutudur.
+The default invocation uses the `codex` command.
 
-- Tavsiye: `CODEX_BIN="$(command -v codex)"` ile aktif binary bir kez tespit edilip otomasyonda bu degisken kullanilir.
-- Kural: Dokumana hard-coded mutlak path yazilmaz; path ortama ozeldir.
-- Fallback: Shell alias/function belirsizse `CODEX_BIN` ile cagri yapilir.
+- Recommendation: Detect the active binary once with `CODEX_BIN="$(command -v codex)"` and use this variable in automation.
+- Rule: Do not hard-code absolute paths in documentation; paths are environment-specific.
+- Fallback: If the shell alias/function is ambiguous, invoke via `CODEX_BIN`.
 
-Pratik not:
+Practical note:
 
-- `codex` bir shell function/alias ise, orchestrator otomasyonunda dogrudan binary ile cagirmak daha deterministik olur.
+- If `codex` is a shell function/alias, invoking the binary directly in orchestrator automation is more deterministic.
 
-### 3.2 Session lifecycle
+### 3.2 Session Lifecycle
 
-Her ticket icin ayri session acilir ve ayni session devam ettirilir.
+A separate session is opened for each ticket and the same session is resumed for follow-ups.
 
-- **Baslat:** `codex exec "<kickoff prompt>" -C <worktree> --json`
-- **Devam:** `codex exec resume <thread_id> "<follow-up prompt>" --json`
-- **Kural:** Bir ticket kapanmadan yeni session acilmaz (exception: session corruption).
+- **Start:** `codex exec "<kickoff prompt>" -C <worktree> --json`
+- **Resume:** `codex exec resume <thread_id> "<follow-up prompt>" --json`
+- **Rule:** No new session is opened until the current ticket is closed (exception: session corruption).
 
-### 3.3 JSON event kaydi
+### 3.3 JSON Event Logging
 
-Tavsiye edilen pratik:
+Recommended practice:
 
-- Tum `codex exec` ciktilari `.worktrees/<branch>/.logs/*.jsonl` altina yazilir.
-- `thread.started` event'indeki `thread_id` live board'a not edilir.
+- All `codex exec` outputs are written to `.worktrees/<branch>/.logs/*.jsonl`.
+- The `thread_id` from the `thread.started` event is noted on the live board.
 
-### 3.4 Opsiyonel Smoke Test (exec + resume)
+### 3.4 Optional Smoke Test (exec + resume)
 
-Amac: Codex CLI'nin (1) yeni session baslatma ve (2) ayni session'a resume ile devam etme kabiliyetini hizlica dogrulamak.
+Purpose: Quickly verify that Codex CLI can (1) start a new session and (2) resume the same session.
 
 ```bash
 set -euo pipefail
@@ -65,13 +65,13 @@ CODEX_BIN="${CODEX_BIN:-$(command -v codex)}"
 OUT_DIR="${OUT_DIR:-/tmp/codex-orch-smoke}"
 mkdir -p "$OUT_DIR"
 
-# 1) Yeni session baslat (thread_id al)
+# 1) Start a new session (capture thread_id)
 "$CODEX_BIN" exec "Remember this exact token: SMOKE42. Reply only READY." \
   --json > "$OUT_DIR/ev1.jsonl"
 
 THREAD_ID=$(jq -r 'select(.type=="thread.started")|.thread_id' "$OUT_DIR/ev1.jsonl" | head -n 1)
 
-# 2) Ayni session'a resume ile devam et
+# 2) Resume the same session
 "$CODEX_BIN" exec resume "$THREAD_ID" "What is the token? Reply only it." \
   --json > "$OUT_DIR/ev2.jsonl"
 
@@ -81,14 +81,14 @@ test "$TOKEN" = "SMOKE42"
 echo "OK: exec+resume works (thread_id=$THREAD_ID)"
 ```
 
-### 3.5 Opsiyonel "Always-On" Bekleme (tmux)
+### 3.5 Optional "Always-On" Watch Loop (tmux)
 
-Orchestrator'un "cevap verdikten sonra da" arka planda repo durumunu izlemesi isteniyorsa, en pratik yontem bir tmux loop'tur.
+If the orchestrator needs to monitor the repo in the background after responding, the most practical method is a tmux loop.
 
-- Monitor-only (guvenli): sadece `fetch/status` ve branch SHA degisimlerini raporlar.
-- Ornek: `orchd start <repo_dir> 30` (bkz. `~/.local/bin/orchd --help`)
+- Monitor-only (safe): only reports `fetch/status` and branch SHA changes.
+- Example: `orchd start <repo_dir> 30` (see `~/.local/bin/orchd --help`)
 
-En minimal alternatif (script yok, sadece tmux + `sleep`):
+Most minimal alternative (no script, just tmux + `sleep`):
 
 ```bash
 tmux new -d -s orch-monitor '
@@ -100,14 +100,14 @@ while true; do
 done'
 ```
 
-Not:
+Note:
 
-- Buradaki fikir `sleep` ile "bekle", sonra tekrar "kontrol et" dongusudur.
-- Daha aktif bir orchestrator isteniyorsa, her dongude `codex exec resume <thread_id> ...` ile ilgili agent session'larina follow-up atilip, ardindan tekrar `sleep`e donulebilir.
+- The idea here is a "wait" with `sleep`, then "check again" loop.
+- For a more active orchestrator, each loop iteration can send follow-ups to relevant agent sessions via `codex exec resume <thread_id> ...`, then return to `sleep`.
 
-## 4) Prompt Contract (Onerilen Minimum)
+## 4) Prompt Contract (Recommended Minimum)
 
-Her kickoff prompt su basligi icerir:
+Every kickoff prompt includes the following header:
 
 ```text
 AGENT: <agent-id-or-role>
@@ -117,180 +117,180 @@ WORKTREE: <path>
 STATUS: <GO|PREP_ONLY|REVIEW|...>
 ```
 
-Pratikte su 4 blokun bulunmasi tavsiye edilir:
+In practice, the following 4 blocks are recommended:
 
-1. **Goal** (ne bitecek?)
+1. **Goal** (what will be completed?)
 2. **Scope** (in/out)
-3. **Acceptance** (komut + beklenen sonuc)
-4. **Deliverables** (dosya path + task report)
+3. **Acceptance** (command + expected result)
+4. **Deliverables** (file paths + task report)
 
-## 5) Baslatma Sirasi (Referans Flow)
+## 5) Launch Sequence (Reference Flow)
 
-1. **Preflight:** scope + dependency + risk kontrolu
-2. **Worktree/branch acilisi:** policy'ye uygun
-3. **Kickoff dagitimi:** bagimsizlar paralel, bagimli olanlar gated
-4. **Checkpoint review:** ara kanit topla
-5. **Final review:** lint/test/contract/build dogrula
-6. **Merge queue:** dependency sirasiyla entegre et
-7. **Post-merge regression:** main uzerinde toplu test
-8. **Sync:** backlog + board + memory + changelog guncelle
+1. **Preflight:** scope + dependency + risk check
+2. **Worktree/branch creation:** according to policy
+3. **Kickoff distribution:** independent tasks in parallel, dependent ones gated
+4. **Checkpoint review:** collect interim evidence
+5. **Final review:** verify lint/test/contract/build
+6. **Merge queue:** integrate in dependency order
+7. **Post-merge regression:** run full tests on main
+8. **Sync:** update backlog + board + memory + changelog
 
-## 5.1 Ops Artifact'leri (Isimden Bagimsiz)
+## 5.1 Ops Artifacts (Name-Independent)
 
-Runbook "backlog/board/memory/changelog" derken asagidaki 4 artefakti kasteder (isimler projeye gore degisir):
+When this runbook refers to "backlog/board/memory/changelog", it means the following 4 artifacts (names may vary by project):
 
-- **Backlog/plan:** ticket listesi, oncelik, bagimlilik
-- **Live board:** canli durum, kanit, blocker, next action
-- **Memory/decisions:** kararlar, pattern'ler, aktif riskler (kisa ve dogrulanabilir)
-- **Release notes:** degisiklik gunlugu / kapanis notu
+- **Backlog/plan:** ticket list, priority, dependencies
+- **Live board:** current status, evidence, blockers, next action
+- **Memory/decisions:** decisions, patterns, active risks (brief and verifiable)
+- **Release notes:** changelog / closeout note
 
-## 6) Paralellesme Karar Matrisi
+## 6) Parallelization Decision Matrix
 
-### Paralel baslat (genelde evet)
+### Start in parallel (generally yes)
 
-- Dosya sahipligi ayrik
-- Kontrat/arayuz sabit
-- Birinin cikisi digerini degistirmiyor
+- File ownership is disjoint
+- Contract/interface is stable
+- One task's output does not affect the other
 
-### Gated baslat (genelde daha guvenli)
+### Start gated (generally safer)
 
-- Migration id/revision ayni alana dokunuyor
-- Tuketici katman, saglayici cevabina siki bagli
-- Politika/kontrat henuz net degil
+- Migration IDs/revisions touch the same area
+- Consumer layer is tightly coupled to provider output
+- Policy/contract is not yet finalized
 
-## 7) Checkpoint Tasarimi (Uzun Gorevler)
+## 7) Checkpoint Design (Long-Running Tasks)
 
-Uzun gorevlerde iki checkpoint modeli faydalidir:
+For long-running tasks, a two-checkpoint model is useful:
 
-- **CP1 (structural):** temel mimari + ilk test
-- **CP2 (final):** tam entegrasyon + dokuman + kanit
+- **CP1 (structural):** core architecture + initial tests
+- **CP2 (final):** full integration + documentation + evidence
 
-Varsayilan gecis kural:
+Default gate rules:
 
-- CP1 red ise CP2'ye gecis yok
-- CP2'de kalite kapisi eksikse merge yok
+- If CP1 is rejected, no transition to CP2
+- If CP2 is missing quality gate evidence, no merge
 
-## 8) Merge Queue Kurali
+## 8) Merge Queue Rules
 
-1. DAG'e gore topolojik siralama yap.
-2. Ayni dosya grubuna dokunan branchleri ard arda merge et.
-3. Her merge sonrasi en az hedef alan smoke test kos.
-4. Tum queue sonunda tam regresyon kos.
+1. Perform topological sort based on the DAG.
+2. Merge branches that touch the same file group in sequence.
+3. After each merge, run at minimum a targeted smoke test.
+4. After the entire queue is drained, run a full regression suite.
 
-## 9) Kalite Kapisi Minimumlari
+## 9) Quality Gate Minimums
 
-Her ticket icin, baglama uygun en az su kanit seti tavsiye edilir:
+For each ticket, the following minimum evidence set is recommended (adapted to context):
 
-- Lint veya esdeger statik kontrol PASS
-- Ticket-ozel test/smoke PASS
-- Task report tamam
-- Risk/rollback notu var
+- Lint or equivalent static analysis PASS
+- Ticket-specific test/smoke PASS
+- Task report complete
+- Risk/rollback note present
 
-Wave kapanisi icin, mumkun oldugunca su set tamamlanir:
+For wave closeout, complete as much of the following as possible:
 
-- Sistem genelinde full suite PASS (stack'e gore)
-- Contract suite PASS (varsa)
-- UI/app analiz + test PASS (varsa)
-- Live-board `done` + blocker `none`
+- System-wide full suite PASS (stack-dependent)
+- Contract suite PASS (if applicable)
+- UI/app analysis + test PASS (if applicable)
+- Live board shows `done` + blocker `none`
 
-## 10) Conflict ve Recovery Playbook
+## 10) Conflict and Recovery Playbook
 
-### 10.1 Cakisma tipleri
+### 10.1 Conflict Types
 
-- **Schema/migration cakismasi** (en kritik)
-- **Kontrat drift** (endpoint/event/payload)
-- **UI state/API payload drift**
+- **Schema/migration conflict** (most critical)
+- **Contract drift** (endpoint/event/payload)
+- **UI state / API payload drift**
 - **Shared doc churn** (release notes/live board)
 
-### 10.2 Cozum stratejisi
+### 10.2 Resolution Strategy
 
-1. Cakismayi teknik ve surec olarak ayir.
-2. Kaynak branch'i degistirmeden once mevcut main'i referans al.
-3. Migration'da tek-head zorunlulugunu koru.
-4. Cozumden sonra ilgili test subsetini hemen kos.
+1. Separate the conflict into technical and process dimensions.
+2. Reference current main before modifying the source branch.
+3. Maintain single-head constraint for migrations.
+4. Immediately run the relevant test subset after resolution.
 
-## 11) Evidence Standardi
+## 11) Evidence Standard
 
-Ajan raporlarinda komut + sonuc satiri bulunmasi tavsiye edilir:
+Agent reports should include command + result lines:
 
 ```text
 EVIDENCE:
 - CMD: <command>
   RESULT: PASS|FAIL
-  OUTPUT: <kisa ozet>
+  OUTPUT: <brief summary>
 ```
 
-Ops board satirlarinda en az:
+Ops board rows should contain at minimum:
 
-- latest commit sha
-- lint evidence
-- test evidence
-- blocker
-- next action
+- Latest commit SHA
+- Lint evidence
+- Test evidence
+- Blocker
+- Next action
 
-## 11.1 Secret ve Yetki Hijyeni
+## 11.1 Secret and Credential Hygiene
 
-- Prompt'lara API key, token, cookie, refresh token koymayin.
-- Gerekli credential/secret degerlerini environment veya secret manager uzerinden verin.
-- Agent'in urettigi log/raporlarda secret izine karsi hizli tarama yapin.
+- Do not include API keys, tokens, cookies, or refresh tokens in prompts.
+- Provide required credentials/secrets via environment variables or a secret manager.
+- Perform a quick scan of agent-generated logs/reports for secret leakage.
 
-## 12) Handoff Protokolu (Sonraki Orchestrator icin)
+## 12) Handoff Protocol (For the Next Orchestrator)
 
-Her wave sonunda orchestrator sunlari birakir:
+At the end of each wave, the orchestrator leaves behind:
 
-1. Kapanis raporu (`<WAVE>-closeout-orchestrator.md` veya esdeger)
-2. Guncel queue (done/in_progress/todo)
-3. Aktif riskler ve acik teknik borclar
-4. Baslatmaya hazir sonraki 3 ticket
+1. Closeout report (`<WAVE>-closeout-orchestrator.md` or equivalent)
+2. Current queue state (done/in_progress/todo)
+3. Active risks and open technical debt
+4. Next 3 tickets ready to launch
 
-Handoff ciktisi "tek bakista" okunabilir olmalidir.
+Handoff output must be readable "at a glance".
 
-## 13) Anti-Pattern Listesi
+## 13) Anti-Pattern List
 
-Asagidakilerden guclu sekilde kacinin:
+Strongly avoid the following:
 
-- Kanitsiz `done` isaretlemek
-- Bagimli ticketlari ayni anda full execute etmek
-- Agent raporu gelmeden merge'e zorlamak
-- Main uzerinde regressionsiz dalga kapatmak
-- Cakismayi gecici hack ile gecistirmek
+- Marking tasks `done` without evidence
+- Full-executing dependent tickets simultaneously
+- Forcing a merge before the agent report arrives
+- Closing a wave on main without regression testing
+- Patching conflicts with temporary hacks
 
-## 14) Pratik Komut Referansi
+## 14) Practical Command Reference
 
 ```bash
-# Ticket baslat
+# Start a ticket
 "${CODEX_BIN:-codex}" exec "<kickoff prompt>" -C .worktrees/<branch> --json
 
-# Ayni ticketi devam ettir
+# Resume the same ticket
 "${CODEX_BIN:-codex}" exec resume <thread_id> "<follow-up>" --json
 
-# Genel kalite kapisi (proje stack'ine gore uyarlanir)
+# General quality gate (adapt to your project stack)
 <lint-command>
 <test-command>
 <contract-command-optional>
 <ui-analyze-and-test-optional>
 ```
 
-## 15) Basari Kriteri
+## 15) Success Criteria
 
-Orchestrator basarili sayilirsa:
+The orchestrator is considered successful when:
 
-- Lead time duser
-- Rework orani azalir
-- Merge conflict sayisi azalir
-- Wave kapanislarinda regressionsiz teslim orani artar
+- Lead time decreases
+- Rework rate decreases
+- Merge conflict count decreases
+- Regression-free delivery rate increases across wave closeouts
 
-## 16) Yargi Payi
+## 16) Judgment Margin
 
-Bu runbook bir kontrol listesi degil, karar destegi belgesidir.
+This runbook is a decision-support document, not a checklist.
 
-- Orchestrator, proje gercegine gore adim atlarinin agirligini degistirebilir.
-- Kritik durumda hiz icin degil, risk azaltimi icin karar verir.
-- Standarttan sapma varsa sebebi kisa notla kayda gecer.
+- The orchestrator may adjust the weight of individual steps based on project reality.
+- In critical situations, decisions favor risk reduction over speed.
+- Any deviation from the standard is recorded with a brief justification note.
 
-## 17) Web Kaynaklari (Okuma Listesi)
+## 17) Web Resources (Reading List)
 
-- Codex CLI repo/dokumantasyon: kurulum + CLI tabanli yerel agent akisi icin iyi referans. (https://github.com/openai/codex)
-- LangGraph: orkestrasyonu graph/DAG olarak dusunme, durable execution ve human-in-the-loop gibi kavramlar icin referans. (https://github.com/langchain-ai/langgraph)
-- AutoGen: event-driven multi-agent sistem yaklasimi, multi-agent uygulama ve runtime kavramlari icin referans. (https://microsoft.github.io/autogen/stable/)
-- CrewAI: crew/flow/process kavramlari ve guardrails/observability odakli multi-agent pratikleri icin referans. (https://docs.crewai.com/)
+- Codex CLI repository/documentation: good reference for setup + CLI-based local agent workflows. (https://github.com/openai/codex)
+- LangGraph: reference for thinking about orchestration as graphs/DAGs, durable execution, and human-in-the-loop concepts. (https://github.com/langchain-ai/langgraph)
+- AutoGen: reference for event-driven multi-agent system approaches, multi-agent application and runtime concepts. (https://microsoft.github.io/autogen/stable/)
+- CrewAI: reference for crew/flow/process concepts and guardrails/observability-focused multi-agent practices. (https://docs.crewai.com/)

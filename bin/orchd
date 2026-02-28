@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Dependency checks ---
+for dep in git tmux awk cmp diff; do
+  command -v "$dep" >/dev/null 2>&1 || {
+    printf 'orchd: required command not found: %s\n' "$dep" >&2
+    exit 1
+  }
+done
+
 usage() {
   cat <<'EOF'
 orchd - tiny always-on orchestration monitor (tmux)
@@ -27,6 +35,8 @@ die() {
   exit 1
 }
 
+SELF="$(readlink -f "$0")"
+
 cmd=${1:-}
 shift || true
 
@@ -38,6 +48,8 @@ session_default() {
   local repo_dir=$1
   local base
   base=$(basename "$repo_dir")
+  # Sanitize: keep only alphanumeric, dot, hyphen, underscore
+  base=${base//[^a-zA-Z0-9._-]/_}
   printf '%s\n' "orchd-${base}"
 }
 
@@ -71,11 +83,20 @@ tick() {
 
   if [[ -f "$state_dir/$session/refs.last" ]]; then
     if ! cmp -s "$state_dir/$session/refs.last" "$state_dir/$session/refs.current"; then
+      local log_file="$state_dir/$session/changes.log"
+      # Rotate log if it exceeds ~10 MB
+      if [[ -f "$log_file" ]]; then
+        local log_size
+        log_size=$(wc -c < "$log_file" 2>/dev/null || printf '0')
+        if (( log_size > 10485760 )); then
+          mv -f "$log_file" "${log_file}.1"
+        fi
+      fi
       {
         printf '== %s ==\n' "$ts"
         diff -u "$state_dir/$session/refs.last" "$state_dir/$session/refs.current" || true
         printf '\n'
-      } >>"$state_dir/$session/changes.log"
+      } >>"$log_file"
     fi
   fi
 
@@ -102,7 +123,7 @@ case "$cmd" in
     session=${ORCHD_SESSION:-$(session_default "$repo_dir")}
 
     tmux has-session -t "$session" 2>/dev/null && die "already running: $session"
-    tmux new -d -s "$session" "$HOME/.local/bin/orchd __run "$repo_dir" "$interval" "$session""
+    tmux new -d -s "$session" "$SELF __run '${repo_dir}' '${interval}' '${session}'"
     printf '%s\n' "started: $session (repo=$repo_dir interval=${interval}s)"
     ;;
   __run)
@@ -123,7 +144,12 @@ case "$cmd" in
     printf '%s\n' "stopped: $session"
     ;;
   list)
-    tmux list-sessions -F '#{session_name}' 2>/dev/null | awk '/^orchd-/' || true
+    sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | awk '/^orchd-/' || true)
+    if [[ -n "$sessions" ]]; then
+      printf '%s\n' "$sessions"
+    else
+      printf '%s\n' "no active orchd sessions"
+    fi
     ;;
   status)
     session=${1:-}
@@ -134,6 +160,8 @@ case "$cmd" in
       if [[ -f "$state_dir/$session/snapshot.txt" ]]; then
         printf '\n'
         sed -n '1,12p' "$state_dir/$session/snapshot.txt" || true
+      else
+        printf '%s\n' "(no snapshot yet — waiting for first tick)"
       fi
     else
       die "not running: $session"
