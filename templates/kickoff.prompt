@@ -37,16 +37,29 @@ STATUS: GO
 2. All acceptance criteria met and verified
 3. Code compiles/runs without errors
 4. Any new functionality has appropriate tests
+5. TASK_REPORT.md at the worktree root (see below)
 
 ## Rules
 
 - Work ONLY within your worktree: {worktree_path}
 - Commit frequently with clear messages
 - Do NOT merge into main — the orchestrator handles merges
+- Do not log or commit PII, tokens, or API keys
 - If you encounter a blocker, document it clearly in a file named BLOCKER.md at the worktree root
 - If you need user input (credentials, decisions, missing requirements), write it to a file named .orchd_needs_input.md at the worktree root and exit
-- When finished, create a file named TASK_REPORT.md at the worktree root with:
-  - Summary of changes
-  - Files modified/created
-  - Test results (commands run + output)
-  - Any risks or notes for the orchestrator
+
+## TASK_REPORT.md (Required)
+
+When finished, create TASK_REPORT.md at the worktree root with:
+
+- Summary of changes
+- Files modified/created
+- Evidence in this format:
+  ```
+  EVIDENCE:
+  - CMD: <command>
+    RESULT: PASS|FAIL
+    OUTPUT: <brief summary, max 3 lines>
+  ```
+- Rollback note (what triggers rollback + how to revert)
+- Risks/notes for the orchestrator

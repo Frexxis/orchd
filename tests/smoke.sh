@@ -265,6 +265,12 @@ else
 	fail "OPENCODE.md not created"
 fi
 
+if [[ -f "$INIT_DIR/orchestrator-runbook.md" ]]; then
+	pass "orchestrator-runbook.md created"
+else
+	fail "orchestrator-runbook.md not created"
+fi
+
 printf '\n[7] Orchestration commands (no-project validation)\n'
 # These should fail gracefully when not in an orchd project
 assert_exit_nonzero "plan without project fails" "$ORCHD" plan "test"
