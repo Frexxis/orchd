@@ -45,8 +45,7 @@ STATUS: GO
 - Commit frequently with clear messages
 - Do NOT merge into main — the orchestrator handles merges
 - Do not log or commit PII, tokens, or API keys
-- If you encounter a blocker, document it clearly in a file named BLOCKER.md at the worktree root
-- If you need user input (credentials, decisions, missing requirements), write it to a file named .orchd_needs_input.md at the worktree root and exit
+- If you are blocked or need user input (credentials, decisions, missing requirements), write it to a file named .orchd_needs_input.md at the worktree root and exit
 
 ## TASK_REPORT.md (Required)
 

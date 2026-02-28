@@ -7,6 +7,13 @@ cmd_merge() {
 
 	require_project
 
+	# Prevent concurrent merges from corrupting git state.
+	# Lock is held for the lifetime of this process.
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>"$ORCHD_DIR/merge.lock"
+		flock -n 9 || die "another merge is already in progress"
+	fi
+
 	if [[ "$target" == "--all" ]]; then
 		_merge_all_ready
 	elif [[ -n "$target" ]]; then

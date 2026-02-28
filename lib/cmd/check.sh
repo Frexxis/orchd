@@ -68,6 +68,13 @@ _check_single() {
 		_check_printf '  [FAIL] needs user input (.orchd_needs_input.md present)\n'
 		failed=$((failed + 1))
 	fi
+	# Backward compatibility: treat BLOCKER.md as needs_input as well.
+	if [[ -f "$worktree/BLOCKER.md" ]]; then
+		needs_input=true
+		total=$((total + 1))
+		_check_printf '  [FAIL] blocked (BLOCKER.md present; use .orchd_needs_input.md going forward)\n'
+		failed=$((failed + 1))
+	fi
 
 	# 1. Check if agent session has exited (task is complete)
 	total=$((total + 1))
@@ -117,19 +124,36 @@ _check_single() {
 		task_set "$task_id" "agent_exit_code" "${exit_code:-unknown}"
 	fi
 
-	# 2. Check for TASK_REPORT.md
+	# 2. Check for TASK_REPORT.md and validate minimal contents
 	total=$((total + 1))
 	if [[ -f "$worktree/TASK_REPORT.md" ]]; then
-		_check_printf '  [PASS] TASK_REPORT.md exists\n'
-		passed=$((passed + 1))
+		local report_ok=true
+		if ! grep -q '^EVIDENCE:' "$worktree/TASK_REPORT.md" 2>/dev/null; then
+			report_ok=false
+		fi
+		if ! grep -q '^[[:space:]]*- CMD:' "$worktree/TASK_REPORT.md" 2>/dev/null; then
+			report_ok=false
+		fi
+		if ! grep -q '^[[:space:]]*RESULT:' "$worktree/TASK_REPORT.md" 2>/dev/null; then
+			report_ok=false
+		fi
+		if ! grep -q '^[[:space:]]*OUTPUT:' "$worktree/TASK_REPORT.md" 2>/dev/null; then
+			report_ok=false
+		fi
+		if ! grep -qi 'rollback' "$worktree/TASK_REPORT.md" 2>/dev/null; then
+			report_ok=false
+		fi
+		if $report_ok; then
+			_check_printf '  [PASS] TASK_REPORT.md exists (evidence + rollback present)\n'
+			passed=$((passed + 1))
+		else
+			_check_printf '  [FAIL] TASK_REPORT.md incomplete (missing evidence and/or rollback note)\n'
+			_check_printf '         expected: EVIDENCE + - CMD + RESULT + OUTPUT, and a rollback note\n'
+			failed=$((failed + 1))
+		fi
 	else
 		_check_printf '  [FAIL] TASK_REPORT.md not found\n'
 		failed=$((failed + 1))
-	fi
-
-	# 3. Check for BLOCKER.md (presence = warning)
-	if [[ -f "$worktree/BLOCKER.md" ]]; then
-		_check_printf '  [WARN] BLOCKER.md found — review required\n'
 	fi
 
 	# 4. Check for commits on the branch

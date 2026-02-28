@@ -2,13 +2,20 @@
 
 ## Summary
 
-- Improved `orchd plan` reliability: bounded context size, optional `--runner` override, and loud failure on empty output.
-- Captured plan runner stderr to `.orchd/plan_stderr.log` (no more silent codex auth/transport failures).
-- Saved raw codex JSONL to `.orchd/plan_raw.jsonl` for debugging.
+- Ensured agent policy docs are present inside each worktree on spawn/resume (workers can always read AGENTS/WORKER docs).
+- Made `orchd check` validate TASK_REPORT.md has evidence + rollback note.
+- Fixed autopilot terminal condition so failed tasks are retryable (no premature exit during backoff).
+- Added a merge lock to prevent concurrent merges from corrupting git state.
+- Standardized blocker protocol in kickoff prompt: use `.orchd_needs_input.md`.
 
 ## Files Modified/Created
 
-- lib/cmd/plan.sh
+- lib/cmd/autopilot.sh
+- lib/cmd/check.sh
+- lib/cmd/merge.sh
+- lib/cmd/resume.sh
+- lib/cmd/spawn.sh
+- templates/kickoff.prompt
 
 ## Tests Run
 
@@ -17,4 +24,4 @@
 
 ## Risks/Notes
 
-- New config knobs (optional): `orchestrator.plan_*` to bound plan context and avoid model context-limit issues.
+- TASK_REPORT.md validation is intentionally minimal (presence of EVIDENCE/CMD/RESULT/OUTPUT + rollback keyword).

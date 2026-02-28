@@ -49,6 +49,9 @@ _resume_single() {
 	[[ -n "$worktree" ]] || die "no worktree found for task: $task_id"
 	[[ -d "$worktree" ]] || die "worktree missing: $worktree"
 
+	# Ensure agent policy docs exist in the worktree for the resumed agent.
+	ensure_agent_docs "$worktree"
+
 	local runner
 	runner=$(task_get "$task_id" "runner" "")
 	if [[ -z "$runner" ]]; then

@@ -89,6 +89,11 @@ _spawn_single() {
 		die "failed to create worktree for task: $task_id"
 	}
 
+	# Ensure agent policy docs are available inside the worktree.
+	# These files are created by `orchd init` in the project root, but may be untracked;
+	# worktrees only include tracked files. Create them here if missing so the worker can read them.
+	ensure_agent_docs "$worktree_path"
+
 	# Build kickoff prompt
 	local prompt
 	prompt=$(_build_kickoff_prompt "$task_id" "$worktree_path")

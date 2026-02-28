@@ -82,7 +82,8 @@ cmd_autopilot() {
 			"$ts" "$iteration" "$pending" "$running" "$done_count" "$merged" "$failed" "$needs_input"
 
 		# --- Terminal: all tasks in final state ---
-		if ((total > 0)) && ((merged + failed + conflict + needs_input >= total)); then
+		# Note: `failed` is not terminal here because autopilot can retry failed tasks.
+		if ((total > 0)) && ((merged + conflict + needs_input >= total)); then
 			_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
 			return 0
 		fi
@@ -91,7 +92,7 @@ cmd_autopilot() {
 		_autopilot_check_finished
 
 		# --- Phase 2: Retry failed tasks (safe, bounded) ---
-		_autopilot_retry_failed
+		_autopilot_retry_failed "$runner"
 
 		# --- Phase 3: Merge done tasks (DAG order) ---
 		_autopilot_merge_done
@@ -117,7 +118,7 @@ cmd_autopilot() {
 			needs_input) needs2=$((needs2 + 1)) ;;
 			esac
 		done <<<"$(task_list_ids)"
-		if ((total2 > 0)) && ((merged2 + failed2 + conflict2 + needs2 >= total2)); then
+		if ((total2 > 0)) && ((merged2 + conflict2 + needs2 >= total2)); then
 			_autopilot_summary "$merged2" "$failed2" "$conflict2" "$needs2"
 			return 0
 		fi
@@ -147,7 +148,9 @@ _autopilot_check_finished() {
 }
 
 # --- Phase 2: retry failed tasks (safe, bounded) ---
+
 _autopilot_retry_failed() {
+	local runner=${1:-}
 	local retry_limit
 	retry_limit=$(config_get "autopilot_retry_limit" "2")
 	local base_backoff
@@ -168,6 +171,15 @@ _autopilot_retry_failed() {
 		[[ -z "$task_id" ]] && continue
 		status=$(task_status "$task_id")
 		[[ "$status" == "failed" ]] || continue
+
+		# If no AI runner is available, we cannot retry; mark as needs_input.
+		if [[ "$runner" == "none" ]]; then
+			task_set "$task_id" "status" "needs_input"
+			task_set "$task_id" "needs_input_at" "$(now_iso)"
+			task_set "$task_id" "last_failure_reason" "no_runner"
+			log_event "WARN" "autopilot: $task_id needs_input (no runner available to retry)"
+			continue
+		fi
 
 		local worktree
 		worktree=$(task_get "$task_id" "worktree" "")
