@@ -26,17 +26,30 @@ jobs:
             lib/cmd/board.sh \
             lib/cmd/check.sh \
             lib/cmd/merge.sh \
+            tests/config_get.sh \
             tests/smoke.sh
 
   test:
-    name: Smoke Tests
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     needs: lint
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Install tmux
+      - name: Install tmux (Ubuntu)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            brew install tmux
+          fi
       - name: Make scripts executable
-        run: chmod +x bin/orchd tests/smoke.sh
+        run: chmod +x bin/orchd tests/config_get.sh tests/smoke.sh
+      - name: Run config_get regression tests
+        run: ./tests/config_get.sh
       - name: Run smoke tests
         run: ./tests/smoke.sh

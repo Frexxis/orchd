@@ -42,10 +42,16 @@ config_get() {
 				section = ""
 				wanted_section = ""
 				wanted_key = wanted
-				dot = index(wanted, ".")
-				if (dot > 0) {
-					wanted_section = substr(wanted, 1, dot - 1)
-					wanted_key = substr(wanted, dot + 1)
+				emitted = 0
+				last_dot = 0
+				for (i = 1; i <= length(wanted); i++) {
+					if (substr(wanted, i, 1) == ".") {
+						last_dot = i
+					}
+				}
+				if (last_dot > 0) {
+					wanted_section = substr(wanted, 1, last_dot - 1)
+					wanted_key = substr(wanted, last_dot + 1)
 				}
 				best_rank = 999
 			}
@@ -110,13 +116,14 @@ config_get() {
 				best_val = val
 				best_rank = r
 				if (best_rank == 0) {
+					emitted = 1
 					print best_val
 					exit
 				}
 			}
 
 			END {
-				if (best_rank < 999) print best_val
+				if (emitted == 0 && best_rank < 999) print best_val
 			}
 		' "$project_root/.orchd.toml" 2>/dev/null)
 	fi

@@ -145,8 +145,9 @@ orchd/
 │   ├── plan.prompt              # Prompt template for task planning
 │   └── kickoff.prompt           # Prompt template for agent kickoff
 ├── orchestrator-runbook.md      # Comprehensive orchestration runbook
+├── tests/config_get.sh          # Config parser regression tests
 ├── tests/smoke.sh               # Smoke tests (40 tests)
-├── .github/workflows/ci.yml    # CI: ShellCheck + smoke tests
+├── .github/workflows/ci.yml    # CI: ShellCheck + config/smoke tests (Ubuntu/macOS)
 ├── LICENSE
 └── README.md
 ```
