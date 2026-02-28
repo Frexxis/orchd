@@ -13,16 +13,30 @@ cmd_init() {
 	fi
 
 	# Detect available runner
-	local runner="auto"
-	if command -v codex >/dev/null 2>&1; then
-		runner="codex"
-	elif command -v claude >/dev/null 2>&1; then
-		runner="claude"
-	elif command -v opencode >/dev/null 2>&1; then
-		runner="opencode"
-	elif command -v aider >/dev/null 2>&1; then
-		runner="aider"
+	local runner
+	local prev_project_root="${PROJECT_ROOT:-}"
+	PROJECT_ROOT="$project_dir"
+	runner=$(detect_runner)
+	if [[ -n "$prev_project_root" ]]; then
+		PROJECT_ROOT="$prev_project_root"
+	else
+		unset PROJECT_ROOT
 	fi
+
+	local project_name
+	project_name=$(basename "$project_dir")
+
+	# Escape user-controlled values before writing TOML
+	local safe_project_name safe_description
+	safe_project_name=${project_name//\\/\\\\}
+	safe_project_name=${safe_project_name//"/\\"/}
+	safe_project_name=${safe_project_name//$'\n'/\\n}
+	safe_project_name=${safe_project_name//$'\r'/\\r}
+
+	safe_description=${description//\\/\\\\}
+	safe_description=${safe_description//"/\\"/}
+	safe_description=${safe_description//$'\n'/\\n}
+	safe_description=${safe_description//$'\r'/\\r}
 
 	# Detect base branch
 	local base_branch="main"
@@ -38,8 +52,8 @@ cmd_init() {
 # Docs: https://github.com/Frexxis/orchd
 
 [project]
-name = "$(basename "$project_dir")"
-description = "$description"
+name = "$safe_project_name"
+description = "$safe_description"
 base_branch = "$base_branch"
 
 [orchestrator]
@@ -47,6 +61,7 @@ runner = "$runner"
 max_parallel = 3
 worktree_dir = ".worktrees"
 monitor_interval = 30
+board_refresh = 5
 
 [quality]
 lint_cmd = ""

@@ -40,8 +40,8 @@ cmd_plan() {
 
 	local prompt
 	prompt=$(cat "$template_file")
-	prompt=${prompt//\{project_description\}/$description}
-	prompt=${prompt//\{codebase_context\}/$context}
+	prompt=$(replace_token "$prompt" "{project_description}" "$description")
+	prompt=$(replace_token "$prompt" "{codebase_context}" "$context")
 
 	printf 'generating task plan with %s...\n' "$runner"
 
@@ -76,6 +76,23 @@ cmd_plan() {
 		aider --message "$prompt" --yes --no-git 2>/dev/null >"$plan_output" || {
 			die "aider plan generation failed"
 		}
+		;;
+	custom)
+		local custom_cmd
+		custom_cmd=$(config_get "custom_runner_cmd" "")
+		if [[ -z "$custom_cmd" ]]; then
+			die "custom runner requires 'custom_runner_cmd' in .orchd.toml"
+		fi
+		custom_cmd=$(replace_token "$custom_cmd" "{prompt}" "$(printf '%q' "$prompt")")
+		custom_cmd=$(replace_token "$custom_cmd" "{worktree}" "$(printf '%q' "$PROJECT_ROOT")")
+		custom_cmd=$(replace_token "$custom_cmd" "{task_id}" "$(printf '%q' "plan")")
+		custom_cmd=$(replace_token "$custom_cmd" "{log_file}" "$(printf '%q' "$plan_output")")
+		eval "$custom_cmd" >"$plan_output" 2>/dev/null || {
+			die "custom plan generation failed"
+		}
+		;;
+	*)
+		die "unsupported runner for planning: $runner"
 		;;
 	esac
 
@@ -141,7 +158,7 @@ _parse_plan_output() {
 	if ((count == 0)); then
 		printf 'warning: no tasks parsed from plan output\n'
 		printf 'raw output saved to: %s\n' "$plan_file"
-		printf 'you can manually create tasks with: orchd task add <id>\n'
+		printf 'review templates/plan.prompt or adjust parser format and retry\n'
 		return 1
 	fi
 

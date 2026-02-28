@@ -9,8 +9,19 @@ for dep in git tmux awk cmp diff; do
   }
 done
 
+resolve_path() {
+  local target=$1
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$target"
+  else
+    local dir
+    dir=$(dirname "$target")
+    printf '%s/%s\n' "$(cd "$dir" && pwd -P)" "$(basename "$target")"
+  fi
+}
+
 # --- Resolve paths ---
-SELF="$(readlink -f "$0")"
+SELF="$(resolve_path "$0")"
 ORCHD_LIB_DIR="$(dirname "$SELF")/../lib"
 
 # --- Source libraries ---
@@ -98,7 +109,7 @@ tick() {
   mkdir -p "$state_dir/$session"
 
   local ts
-  ts=$(date -Is)
+  ts=$(now_iso)
 
   # Fetch can fail (offline); don't crash the daemon.
   git -C "$repo_dir" fetch --all --prune >/dev/null 2>&1 || true

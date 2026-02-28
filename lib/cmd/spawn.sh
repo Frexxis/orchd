@@ -74,7 +74,11 @@ _spawn_single() {
 		printf 'spawned: %-20s branch=%-25s runner=%s\n' "$task_id" "$branch" "$runner"
 		log_event "INFO" "task spawned: $task_id (branch=$branch runner=$runner)"
 	else
+		worktree_remove "$PROJECT_ROOT" "$worktree_path"
+		rm -f "$(task_dir "$task_id")/session" "$(task_dir "$task_id")/started_at"
+		task_set "$task_id" "worktree" ""
 		task_set "$task_id" "status" "failed"
+		log_event "ERROR" "spawn failed: $task_id (runner=$runner)"
 		die "failed to spawn agent for task: $task_id"
 	fi
 }
@@ -146,12 +150,12 @@ _build_kickoff_prompt() {
 	acceptance=$(task_get "$task_id" "acceptance" "All tests pass")
 	role=$(task_get "$task_id" "role" "domain")
 
-	prompt=${prompt//\{task_id\}/$task_id}
-	prompt=${prompt//\{task_title\}/$title}
-	prompt=${prompt//\{task_description\}/$description}
-	prompt=${prompt//\{acceptance_criteria\}/$acceptance}
-	prompt=${prompt//\{agent_role\}/$role}
-	prompt=${prompt//\{worktree_path\}/$worktree_path}
+	prompt=$(replace_token "$prompt" "{task_id}" "$task_id")
+	prompt=$(replace_token "$prompt" "{task_title}" "$title")
+	prompt=$(replace_token "$prompt" "{task_description}" "$description")
+	prompt=$(replace_token "$prompt" "{acceptance_criteria}" "$acceptance")
+	prompt=$(replace_token "$prompt" "{agent_role}" "$role")
+	prompt=$(replace_token "$prompt" "{worktree_path}" "$worktree_path")
 
 	printf '%s\n' "$prompt"
 }

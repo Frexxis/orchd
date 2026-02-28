@@ -9,7 +9,7 @@ detect_runner() {
 	local configured
 	configured=$(config_get "runner" "")
 
-	if [[ -n "$configured" ]]; then
+	if [[ -n "$configured" ]] && [[ "$configured" != "auto" ]]; then
 		printf '%s\n' "$configured"
 		return 0
 	fi
@@ -161,10 +161,10 @@ _runner_cmd_custom() {
 	fi
 
 	# Replace placeholders: {prompt}, {worktree}, {task_id}, {log_file}
-	custom_cmd=${custom_cmd//\{prompt\}/$(printf '%q' "$prompt")}
-	custom_cmd=${custom_cmd//\{worktree\}/$worktree}
-	custom_cmd=${custom_cmd//\{task_id\}/$task_id}
-	custom_cmd=${custom_cmd//\{log_file\}/$log_file}
+	custom_cmd=$(replace_token "$custom_cmd" "{prompt}" "$(printf '%q' "$prompt")")
+	custom_cmd=$(replace_token "$custom_cmd" "{worktree}" "$(printf '%q' "$worktree")")
+	custom_cmd=$(replace_token "$custom_cmd" "{task_id}" "$(printf '%q' "$task_id")")
+	custom_cmd=$(replace_token "$custom_cmd" "{log_file}" "$(printf '%q' "$log_file")")
 
 	printf '%s' "$custom_cmd"
 }
@@ -199,4 +199,28 @@ runner_attach() {
 		die "session not running: $session_name"
 	fi
 	tmux attach -t "$session_name"
+}
+
+runner_exit_code() {
+	local task_id=$1
+	local runner
+	runner=$(task_get "$task_id" "runner" "")
+
+	local file_candidates=()
+	if [[ "$runner" == "codex" ]]; then
+		file_candidates+=("$LOGS_DIR/${task_id}.jsonl")
+	fi
+	file_candidates+=("$LOGS_DIR/${task_id}.log" "$LOGS_DIR/${task_id}.jsonl")
+
+	local file exit_code
+	for file in "${file_candidates[@]}"; do
+		[[ -f "$file" ]] || continue
+		exit_code=$(awk -F ':' '/^ORCHD_EXIT:/ { code = $2 } END { gsub(/^[[:space:]]+|[[:space:]]+$/, "", code); if (code != "") print code }' "$file")
+		if [[ -n "$exit_code" ]]; then
+			printf '%s\n' "$exit_code"
+			return 0
+		fi
+	done
+
+	return 1
 }

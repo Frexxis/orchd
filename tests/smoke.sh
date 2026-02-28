@@ -2,7 +2,18 @@
 # smoke.sh - Basic smoke tests for orchd
 set -euo pipefail
 
-ORCHD="$(readlink -f "$(dirname "$0")/../bin/orchd")"
+resolve_path() {
+	local target=$1
+	if command -v realpath >/dev/null 2>&1; then
+		realpath "$target"
+	else
+		local dir
+		dir=$(dirname "$target")
+		printf '%s/%s\n' "$(cd "$dir" && pwd -P)" "$(basename "$target")"
+	fi
+}
+
+ORCHD="$(resolve_path "$(dirname "$0")/../bin/orchd")"
 PASS=0
 FAIL=0
 TOTAL=0
@@ -53,6 +64,12 @@ assert_output_contains() {
 	else
 		fail "$desc (pattern '$pattern' not found in output)"
 	fi
+}
+
+run_in_dir() {
+	local dir=$1
+	shift
+	(cd "$dir" && "$@")
 }
 
 cleanup() {
@@ -174,7 +191,7 @@ assert_exit_nonzero "merge without project fails" "$ORCHD" merge --all
 
 printf '\n[8] Board command (in initialized project)\n'
 # Board should work in an initialized project (shows empty board)
-assert_exit_0 "board in init dir" env -C "$INIT_DIR" "$ORCHD" board
+assert_exit_0 "board in init dir" run_in_dir "$INIT_DIR" "$ORCHD" board
 
 printf '\n[9] Help includes orchestration commands\n'
 assert_output_contains "help shows init" "init" "$ORCHD" --help

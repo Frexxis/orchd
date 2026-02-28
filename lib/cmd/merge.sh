@@ -57,6 +57,10 @@ _merge_single() {
 
 	printf 'merging %s (%s -> %s)...\n' "$task_id" "$branch" "$base_branch"
 
+	if ! git -C "$PROJECT_ROOT" checkout "$base_branch" >/dev/null 2>&1; then
+		die "failed to checkout base branch: $base_branch"
+	fi
+
 	# Perform the merge
 	if ! git -C "$PROJECT_ROOT" merge --no-ff "$branch" -m "merge: $task_id ($branch)"; then
 		printf '\nmerge conflict detected!\n'
@@ -67,12 +71,6 @@ _merge_single() {
 		task_set "$task_id" "status" "conflict"
 		return 1
 	fi
-
-	task_set "$task_id" "status" "merged"
-	task_set "$task_id" "merged_at" "$(now_iso)"
-
-	printf 'merged: %s\n' "$task_id"
-	log_event "INFO" "task merged: $task_id ($branch -> $base_branch)"
 
 	# Run post-merge regression if test command is configured
 	local test_cmd
@@ -86,8 +84,16 @@ _merge_single() {
 			printf '  [FAIL] post-merge tests failed!\n'
 			printf '  consider: git revert HEAD\n'
 			log_event "ERROR" "post-merge regression failed: $task_id"
+			task_set "$task_id" "status" "failed"
+			return 1
 		fi
 	fi
+
+	task_set "$task_id" "status" "merged"
+	task_set "$task_id" "merged_at" "$(now_iso)"
+
+	printf 'merged: %s\n' "$task_id"
+	log_event "INFO" "task merged: $task_id ($branch -> $base_branch)"
 
 	# Clean up worktree
 	local worktree
@@ -153,7 +159,10 @@ _merge_all_ready() {
 			fi
 
 			if $all_deps_merged; then
-				_merge_single "$task_id"
+				if ! _merge_single "$task_id"; then
+					printf 'stopping merge --all due to failure in task: %s\n' "$task_id"
+					return 1
+				fi
 				merged_count=$((merged_count + 1))
 				merged_this_round=$((merged_this_round + 1))
 				printf '\n'

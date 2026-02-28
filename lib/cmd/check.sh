@@ -37,15 +37,32 @@ _check_single() {
 
 	local passed=0
 	local failed=0
+	local skipped=0
 	local total=0
 
 	# 1. Check if agent session has exited (task is complete)
 	total=$((total + 1))
+	local agent_alive=false
 	if runner_is_alive "$task_id"; then
+		agent_alive=true
+	fi
+
+	if $agent_alive; then
 		printf '  [SKIP] agent still running\n'
+		skipped=$((skipped + 1))
 	else
-		printf '  [PASS] agent session completed\n'
-		passed=$((passed + 1))
+		local exit_code
+		exit_code=$(runner_exit_code "$task_id" || true)
+		if [[ -z "$exit_code" ]]; then
+			printf '  [FAIL] agent exit status unknown (missing ORCHD_EXIT marker)\n'
+			failed=$((failed + 1))
+		elif [[ "$exit_code" == "0" ]]; then
+			printf '  [PASS] agent session completed (exit=0)\n'
+			passed=$((passed + 1))
+		else
+			printf '  [FAIL] agent session failed (exit=%s)\n' "$exit_code"
+			failed=$((failed + 1))
+		fi
 	fi
 
 	# 2. Check for TASK_REPORT.md
@@ -128,6 +145,9 @@ _check_single() {
 
 	# Summary
 	printf '\n  --- %d/%d passed' "$passed" "$total"
+	if ((skipped > 0)); then
+		printf ' (%d skipped)' "$skipped"
+	fi
 	if ((failed > 0)); then
 		printf ' (%d failed)' "$failed"
 	fi
@@ -136,15 +156,16 @@ _check_single() {
 	# Record evidence
 	task_set "$task_id" "check_passed" "$passed"
 	task_set "$task_id" "check_total" "$total"
+	task_set "$task_id" "check_skipped" "$skipped"
 	task_set "$task_id" "check_failed" "$failed"
 	task_set "$task_id" "checked_at" "$(now_iso)"
 
-	if ((failed == 0)) && ! runner_is_alive "$task_id"; then
+	if ((failed == 0)) && ! $agent_alive; then
 		task_set "$task_id" "status" "done"
 		printf '\n  task marked as DONE (ready for merge)\n'
 		log_event "INFO" "quality gate passed: $task_id ($passed/$total)"
 	else
-		if runner_is_alive "$task_id"; then
+		if $agent_alive; then
 			printf '\n  agent still running — check again later\n'
 		else
 			log_event "WARN" "quality gate failed: $task_id ($passed/$total, $failed failed)"

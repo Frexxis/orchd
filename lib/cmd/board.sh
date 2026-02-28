@@ -43,51 +43,67 @@ _board_print() {
 		fi
 
 		# Status with color
-		local status_display
+		local status_text status_color="" status_reset=""
 		case "$status" in
 		pending)
-			status_display="\033[90m·pend\033[0m "
+			status_text="pend"
+			status_color="\033[90m"
+			status_reset="\033[0m"
 			pending=$((pending + 1))
 			;;
 		running)
 			if runner_is_alive "$task_id"; then
-				status_display="\033[32m●run \033[0m "
+				status_text="run"
+				status_color="\033[32m"
+				status_reset="\033[0m"
 			else
-				status_display="\033[33m○stale\033[0m"
+				status_text="stale"
+				status_color="\033[33m"
+				status_reset="\033[0m"
 			fi
 			running=$((running + 1))
 			;;
 		done)
-			status_display="\033[34m✓done\033[0m "
+			status_text="done"
+			status_color="\033[34m"
+			status_reset="\033[0m"
 			done_count=$((done_count + 1))
 			;;
 		merged)
-			status_display="\033[32m✓mrgd\033[0m "
+			status_text="mrgd"
+			status_color="\033[32m"
+			status_reset="\033[0m"
 			merged=$((merged + 1))
 			;;
 		failed)
-			status_display="\033[31m✗fail\033[0m "
+			status_text="fail"
+			status_color="\033[31m"
+			status_reset="\033[0m"
 			failed=$((failed + 1))
 			;;
 		*)
-			status_display="$status"
+			status_text="$status"
 			;;
 		esac
 
 		# Agent info
-		local agent_info="-"
+		local agent_text="-" agent_color="" agent_reset=""
 		local session_name
 		session_name=$(task_get "$task_id" "session" "")
 		if [[ -n "$session_name" ]]; then
 			if tmux has-session -t "$session_name" 2>/dev/null; then
-				agent_info="\033[32malive\033[0m"
+				agent_text="alive"
+				agent_color="\033[32m"
+				agent_reset="\033[0m"
 			else
-				agent_info="\033[90mexited\033[0m"
+				agent_text="exited"
+				agent_color="\033[90m"
+				agent_reset="\033[0m"
 			fi
 		fi
 
-		printf "│ %-20s │ %-26s │ ${status_display} │ %-15b │\n" \
-			"$task_id" "$title" "$agent_info"
+		printf '│ %-20s │ %-26s │ %b%-6s%b │ %b%-15s%b │\n' \
+			"$task_id" "$title" "$status_color" "$status_text" "$status_reset" "$agent_color" "$agent_text" "$agent_reset"
 	done <<<"$(task_list_ids)"
 
 	if ((total == 0)); then
@@ -121,7 +137,7 @@ _board_print() {
 
 _board_watch() {
 	local interval
-	interval=$(config_get "monitor_interval" "5")
+	interval=$(config_get "board_refresh" "5")
 
 	while true; do
 		clear

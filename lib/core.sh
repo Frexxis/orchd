@@ -29,18 +29,96 @@ require_project() {
 config_get() {
 	local key=$1
 	local default=${2:-}
+	local project_root="${PROJECT_ROOT:-}"
 	local value
-	if [[ -f "$PROJECT_ROOT/.orchd.toml" ]]; then
-		# Simple key = "value" or key = value parser (handles TOML basics)
-		value=$(awk -F '=' -v k="$key" '
-      $1 ~ "^[[:space:]]*"k"[[:space:]]*$" {
-        val = $2
-        for (i=3; i<=NF; i++) val = val "=" $i
-        gsub(/^[[:space:]]*"?|"?[[:space:]]*$/, "", val)
-        print val
-        exit
-      }
-    ' "$PROJECT_ROOT/.orchd.toml" 2>/dev/null)
+
+	if [[ -z "$project_root" ]]; then
+		project_root=$(find_project_root "$PWD" 2>/dev/null || true)
+	fi
+
+	if [[ -n "$project_root" ]] && [[ -f "$project_root/.orchd.toml" ]]; then
+		value=$(awk -v wanted="$key" '
+			BEGIN {
+				section = ""
+				wanted_section = ""
+				wanted_key = wanted
+				dot = index(wanted, ".")
+				if (dot > 0) {
+					wanted_section = substr(wanted, 1, dot - 1)
+					wanted_key = substr(wanted, dot + 1)
+				}
+				best_rank = 999
+			}
+
+			function trim(s) {
+				sub(/^[[:space:]]+/, "", s)
+				sub(/[[:space:]]+$/, "", s)
+				return s
+			}
+
+			function rank(sec) {
+				if (wanted_section != "") {
+					if (sec == wanted_section) return 0
+					return 999
+				}
+				if (sec == "orchestrator") return 1
+				if (sec == "project") return 2
+				if (sec == "quality") return 3
+				if (sec ~ /^runners\./) return 4
+				if (sec == "") return 5
+				return 6
+			}
+
+			{
+				line = $0
+				sub(/\r$/, "", line)
+				if (line ~ /^[[:space:]]*#/ || line ~ /^[[:space:]]*$/) next
+
+				if (match(line, /^[[:space:]]*\[[^]]+\][[:space:]]*$/)) {
+					sec = line
+					gsub(/^[[:space:]]*\[/, "", sec)
+					gsub(/\][[:space:]]*$/, "", sec)
+					section = sec
+					next
+				}
+
+				eq = index(line, "=")
+				if (eq == 0) next
+
+				raw_key = trim(substr(line, 1, eq - 1))
+				raw_val = trim(substr(line, eq + 1))
+				if (raw_key != wanted_key) next
+
+				r = rank(section)
+				if (r >= best_rank) next
+
+				if (raw_val ~ /^"/) {
+					val = raw_val
+					sub(/^"/, "", val)
+					sub(/"[[:space:]]*(#.*)?$/, "", val)
+					gsub(/\\"/, "\"", val)
+					gsub(/\\n/, "\n", val)
+					gsub(/\\r/, "\r", val)
+					gsub(/\\t/, "\t", val)
+					gsub(/\\\\/, "\\", val)
+				} else {
+					val = raw_val
+					sub(/[[:space:]]+#.*$/, "", val)
+					val = trim(val)
+				}
+
+				best_val = val
+				best_rank = r
+				if (best_rank == 0) {
+					print best_val
+					exit
+				}
+			}
+
+			END {
+				if (best_rank < 999) print best_val
+			}
+		' "$project_root/.orchd.toml" 2>/dev/null)
 	fi
 	printf '%s\n' "${value:-$default}"
 }
@@ -82,7 +160,11 @@ task_exists() {
 
 task_list_ids() {
 	if [[ -d "$TASKS_DIR" ]]; then
-		find "$TASKS_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort
+		local d
+		for d in "$TASKS_DIR"/*; do
+			[[ -d "$d" ]] || continue
+			basename "$d"
+		done | sort
 	fi
 }
 
@@ -124,7 +206,7 @@ log_event() {
 	shift
 	local msg="$*"
 	local ts
-	ts=$(date -Is)
+	ts=$(now_iso)
 	printf '[%s] [%s] %s\n' "$ts" "$level" "$msg" >>"$ORCHD_DIR/orchd.log"
 	if [[ "$level" == "ERROR" ]]; then
 		printf '\033[31m[%s] %s\033[0m\n' "$level" "$msg" >&2
@@ -136,7 +218,27 @@ log_event() {
 # --- Timestamps ---
 
 now_iso() {
-	date -Is
+	date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+# --- String utilities ---
+
+replace_token() {
+	local input=$1
+	local token=$2
+	local replacement=$3
+
+	awk -v token="$token" -v replacement="$replacement" '
+		{
+			line = $0
+			out = ""
+			while ((idx = index(line, token)) > 0) {
+				out = out substr(line, 1, idx - 1) replacement
+				line = substr(line, idx + length(token))
+			}
+			print out line
+		}
+	' <<<"$input"
 }
 
 # --- Worktree management ---
