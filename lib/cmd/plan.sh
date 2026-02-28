@@ -16,6 +16,19 @@ cmd_plan() {
 	fi
 
 	local mode="${1:-}"
+	if [[ "$mode" == "-h" || "$mode" == "--help" ]]; then
+		cat <<'EOF'
+usage:
+  orchd plan [--runner <runner>] "<project description>"
+  orchd plan --file <path>
+  orchd plan --stdin
+
+notes:
+  - --runner overrides the configured/auto-detected runner for planning only
+  - plan output must follow the TASK/TITLE/ROLE/DEPS/DESCRIPTION/ACCEPTANCE format
+EOF
+		return 0
+	fi
 	if [[ "$mode" == "--file" ]]; then
 		local plan_file="${2:-}"
 		[[ -n "$plan_file" ]] || die "usage: orchd plan --file <path>"

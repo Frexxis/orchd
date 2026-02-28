@@ -61,7 +61,7 @@ orchd - autonomous AI agent orchestrator
 
 Orchestration commands:
   orchd init   [dir] [description]     Initialize orchd in a project
-  orchd plan   "<description>"         Generate task DAG with AI
+  orchd plan   [--runner <runner>] "<description>"   Generate task DAG with AI
   orchd review [ref]                   Run review-only agent on changes
   orchd spawn  <task-id> | --all       Create worktrees & launch agents
   orchd board  [--watch]               Live agent status dashboard
@@ -72,6 +72,9 @@ Orchestration commands:
   orchd autopilot [poll_seconds]        Fully autonomous: spawn/check/merge loop
   orchd doctor [dir]                   Show effective config and auto-detect
   orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR docs
+
+Runner notes:
+  - Codex runs sandboxed by default. Configure `codex_flags` in .orchd.toml if needed.
 
 Monitor commands:
   orchd start  [repo_dir] [interval]   Start background repo monitor

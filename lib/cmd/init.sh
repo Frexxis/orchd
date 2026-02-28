@@ -74,11 +74,12 @@ lint_cmd = ""
 test_cmd = ""
 build_cmd = ""
 
-# [runners.codex]
-# codex_bin = "codex"
-#
-# [runners.claude]
-# claude_bin = "claude"
+	# [runners.codex]
+	# codex_bin = "codex"
+	# codex_flags = "--dangerously-bypass-approvals-and-sandbox"
+	#
+	# [runners.claude]
+	# claude_bin = "claude"
 #
 # [runners.custom]
 # custom_runner_cmd = "my-agent --prompt {prompt} --dir {worktree}"

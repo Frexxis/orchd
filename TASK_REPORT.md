@@ -2,20 +2,16 @@
 
 ## Summary
 
-- Ensured agent policy docs are present inside each worktree on spawn/resume (workers can always read AGENTS/WORKER docs).
-- Made `orchd check` validate TASK_REPORT.md has evidence + rollback note.
-- Fixed autopilot terminal condition so failed tasks are retryable (no premature exit during backoff).
-- Added a merge lock to prevent concurrent merges from corrupting git state.
-- Standardized blocker protocol in kickoff prompt: use `.orchd_needs_input.md`.
+- Added `orchd plan --help` output (was incorrectly treated as a description and invoked the planner).
+- Added Codex runner flag support via `.orchd.toml` (`codex_flags`) and defaulted to write-enabled mode.
+- Documented runner sandbox note in `orchd --help` and `.orchd.toml` template.
 
 ## Files Modified/Created
 
-- lib/cmd/autopilot.sh
-- lib/cmd/check.sh
-- lib/cmd/merge.sh
-- lib/cmd/resume.sh
-- lib/cmd/spawn.sh
-- templates/kickoff.prompt
+- bin/orchd
+- lib/cmd/init.sh
+- lib/cmd/plan.sh
+- lib/runner.sh
 
 ## Tests Run
 

@@ -103,11 +103,16 @@ _runner_cmd_codex() {
 	local log_file="$LOGS_DIR/${task_id}.jsonl"
 	local codex_bin
 	codex_bin=$(config_get "codex_bin" "codex")
+	local codex_flags
+	# Default enables write access in isolated worktrees.
+	# Override in .orchd.toml with `codex_flags = "..."` (prefer [runners.codex]).
+	codex_flags=$(config_get "codex_flags" "--dangerously-bypass-approvals-and-sandbox")
 
-	printf '%s exec %s -C %s --json > %s 2>&1; echo "ORCHD_EXIT:$?" >> %s' \
+	printf '%s exec %s -C %s %s --json > %s 2>&1; echo "ORCHD_EXIT:$?" >> %s' \
 		"$codex_bin" \
 		"$(printf '%q' "$prompt")" \
 		"$(printf '%q' "$worktree")" \
+		"$codex_flags" \
 		"$(printf '%q' "$log_file")" \
 		"$(printf '%q' "$log_file")"
 }
