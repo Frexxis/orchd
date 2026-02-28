@@ -36,7 +36,7 @@ _merge_single() {
 		return 0
 	fi
 
-	if [[ "$status" != "done" ]]; then
+	if [[ "$status" != "done" ]] && [[ "$status" != "conflict" ]]; then
 		die "task not ready for merge (status: $status). Run: orchd check $task_id"
 	fi
 
@@ -68,15 +68,54 @@ _merge_single() {
 		die "failed to checkout base branch: $base_branch"
 	fi
 
+	# If task is in conflict state, it may have been merged manually already.
+	if [[ "$status" == "conflict" ]]; then
+		if git -C "$PROJECT_ROOT" rev-parse --verify "$branch" >/dev/null 2>&1; then
+			if git -C "$PROJECT_ROOT" merge-base --is-ancestor "$branch" "$base_branch" >/dev/null 2>&1; then
+				task_set "$task_id" "status" "merged"
+				task_set "$task_id" "merged_at" "$(now_iso)"
+				printf 'already merged (manual conflict resolution detected): %s\n' "$task_id"
+				log_event "INFO" "task merged (manual resolution): $task_id ($branch -> $base_branch)"
+				local worktree
+				worktree=$(task_get "$task_id" "worktree" "")
+				if [[ -n "$worktree" ]] && [[ -d "$worktree" ]]; then
+					worktree_remove "$PROJECT_ROOT" "$worktree"
+				fi
+				return 0
+			fi
+		fi
+		# Otherwise, try merging again below.
+	fi
+
 	# Perform the merge
 	if ! git -C "$PROJECT_ROOT" merge --no-ff "$branch" -m "merge: $task_id ($branch)"; then
-		printf '\nmerge conflict detected!\n'
-		printf 'resolve conflicts in %s, then run:\n' "$PROJECT_ROOT"
-		printf '  git add . && git commit\n'
-		printf '  orchd merge %s  (retry)\n' "$task_id"
-		log_event "ERROR" "merge conflict: $task_id ($branch -> $base_branch)"
-		task_set "$task_id" "status" "conflict"
-		return 1
+		# Auto-resolve conflicts caused only by TASK_REPORT.md (local evidence artifact).
+		local conflict_list
+		conflict_list=$(git -C "$PROJECT_ROOT" diff --name-only --diff-filter=U 2>/dev/null || true)
+		local conflict_count
+		conflict_count=$(printf '%s\n' "$conflict_list" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+		if [[ "$conflict_count" == "1" ]] && [[ "$conflict_list" == "TASK_REPORT.md" ]]; then
+			printf 'auto-resolving TASK_REPORT.md conflict (keeping base version)\n'
+			git -C "$PROJECT_ROOT" checkout --ours -- TASK_REPORT.md >/dev/null 2>&1 || true
+			git -C "$PROJECT_ROOT" add TASK_REPORT.md >/dev/null 2>&1 || true
+			git -C "$PROJECT_ROOT" commit --no-edit >/dev/null 2>&1 || {
+				printf '\nmerge conflict detected (TASK_REPORT.md) but auto-commit failed!\n'
+				printf 'resolve conflicts in %s, then run:\n' "$PROJECT_ROOT"
+				printf '  git add . && git commit\n'
+				printf '  orchd merge %s  (retry)\n' "$task_id"
+				log_event "ERROR" "merge conflict (task_report) unresolved: $task_id ($branch -> $base_branch)"
+				task_set "$task_id" "status" "conflict"
+				return 1
+			}
+		else
+			printf '\nmerge conflict detected!\n'
+			printf 'resolve conflicts in %s, then run:\n' "$PROJECT_ROOT"
+			printf '  git add . && git commit\n'
+			printf '  orchd merge %s  (retry)\n' "$task_id"
+			log_event "ERROR" "merge conflict: $task_id ($branch -> $base_branch)"
+			task_set "$task_id" "status" "conflict"
+			return 1
+		fi
 	fi
 
 	# Run post-merge regression if test command is configured

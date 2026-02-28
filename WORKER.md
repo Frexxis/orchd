@@ -61,3 +61,8 @@ Create TASK_REPORT.md at the worktree root with:
 - Evidence (using the format above)
 - Rollback note
 - Risks/notes
+
+Notes:
+
+- Do not commit TASK_REPORT.md or .orchd_needs_input.md; they are treated as local artifacts.
+- orchd archives TASK_REPORT.md into `.orchd/tasks/<task-id>/` during `orchd check`.

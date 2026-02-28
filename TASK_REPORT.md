@@ -2,16 +2,22 @@
 
 ## Summary
 
-- Added `orchd plan --help` output (was incorrectly treated as a description and invoked the planner).
-- Added Codex runner flag support via `.orchd.toml` (`codex_flags`) and defaulted to write-enabled mode.
-- Documented runner sandbox note in `orchd --help` and `.orchd.toml` template.
+- Prevented TASK_REPORT.md merge conflicts:
+  - Ignore agent artifacts in .gitignore by default (TASK_REPORT.md, .orchd_needs_input.md).
+  - Archive TASK_REPORT.md into `.orchd/tasks/<task-id>/` during `orchd check` so evidence survives worktree cleanup.
+  - Auto-resolve merge conflicts caused only by TASK_REPORT.md.
+- Improved conflict-state ergonomics: `orchd merge <task>` detects manually merged conflict tasks and marks them merged.
+- Updated worker guidance to keep TASK_REPORT.md local (not committed).
+- Made smoke tests robust to existing tmux sessions.
 
 ## Files Modified/Created
 
-- bin/orchd
+- WORKER.md
+- lib/core.sh
+- lib/cmd/check.sh
 - lib/cmd/init.sh
-- lib/cmd/plan.sh
-- lib/runner.sh
+- lib/cmd/merge.sh
+- tests/smoke.sh
 
 ## Tests Run
 

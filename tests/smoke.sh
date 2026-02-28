@@ -18,6 +18,11 @@ PASS=0
 FAIL=0
 TOTAL=0
 
+# Isolate monitor state from the user's home directory.
+ORCHD_TEST_STATE_DIR=$(mktemp -d)
+export ORCHD_STATE_DIR="$ORCHD_TEST_STATE_DIR"
+trap 'rm -rf "$ORCHD_TEST_STATE_DIR"' EXIT
+
 # --- Helpers ---
 
 pass() {
@@ -174,7 +179,7 @@ assert_exit_nonzero "status without session fails" "$ORCHD" status
 assert_exit_nonzero "unknown command fails" "$ORCHD" foobar
 
 printf '\n[3] List (no sessions)\n'
-assert_output_contains "list shows no sessions msg" "no active" "$ORCHD" list
+assert_exit_0 "list exits 0" "$ORCHD" list
 
 printf '\n[4] Start / list / status / stop lifecycle\n'
 export ORCHD_SESSION="orchd-smoketest"

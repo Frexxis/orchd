@@ -127,6 +127,17 @@ _check_single() {
 	# 2. Check for TASK_REPORT.md and validate minimal contents
 	total=$((total + 1))
 	if [[ -f "$worktree/TASK_REPORT.md" ]]; then
+		# Archive task report into orchd state so it survives worktree cleanup.
+		local attempts
+		attempts=$(task_get "$task_id" "attempts" "0")
+		if ! [[ "$attempts" =~ ^[0-9]+$ ]]; then
+			attempts=0
+		fi
+		local archived_report
+		archived_report="$(task_dir "$task_id")/TASK_REPORT.attempt${attempts}.md"
+		cp "$worktree/TASK_REPORT.md" "$archived_report" 2>/dev/null || true
+		task_set "$task_id" "task_report_file" "$archived_report"
+
 		local report_ok=true
 		if ! grep -q '^EVIDENCE:' "$worktree/TASK_REPORT.md" 2>/dev/null; then
 			report_ok=false

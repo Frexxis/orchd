@@ -93,8 +93,11 @@ EOF
 		if ! grep -qx '.orchd/' "$project_dir/.gitignore" 2>/dev/null; then
 			printf '\n# orchd state (local)\n.orchd/\n.worktrees/\n' >>"$project_dir/.gitignore"
 		fi
+		if ! grep -qx 'TASK_REPORT.md' "$project_dir/.gitignore" 2>/dev/null; then
+			printf '\n# orchd agent artifacts (local)\nTASK_REPORT.md\n.orchd_needs_input.md\nBLOCKER.md\n' >>"$project_dir/.gitignore"
+		fi
 	else
-		printf '# orchd state (local)\n.orchd/\n.worktrees/\n' >"$project_dir/.gitignore"
+		printf '# orchd state (local)\n.orchd/\n.worktrees/\n\n# orchd agent artifacts (local)\nTASK_REPORT.md\n.orchd_needs_input.md\nBLOCKER.md\n' >"$project_dir/.gitignore"
 	fi
 
 	# Create agent policy docs if missing
