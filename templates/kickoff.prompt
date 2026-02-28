@@ -1,0 +1,41 @@
+AGENT: {agent_role}
+TASK: {task_id}
+BRANCH: agent-{task_id}
+WORKTREE: {worktree_path}
+STATUS: GO
+
+## Goal
+
+{task_title}
+
+## Description
+
+{task_description}
+
+## Scope
+
+- IN: Everything described in the task description above
+- OUT: Anything not directly related to this task; do not modify files outside your scope
+
+## Acceptance Criteria
+
+{acceptance_criteria}
+
+## Deliverables
+
+1. Working implementation on branch `agent-{task_id}`
+2. All acceptance criteria met and verified
+3. Code compiles/runs without errors
+4. Any new functionality has appropriate tests
+
+## Rules
+
+- Work ONLY within your worktree: {worktree_path}
+- Commit frequently with clear messages
+- Do NOT merge into main — the orchestrator handles merges
+- If you encounter a blocker, document it clearly in a file named BLOCKER.md at the worktree root
+- When finished, create a file named TASK_REPORT.md at the worktree root with:
+  - Summary of changes
+  - Files modified/created
+  - Test results (commands run + output)
+  - Any risks or notes for the orchestrator

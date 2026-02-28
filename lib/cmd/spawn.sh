@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# lib/cmd/spawn.sh - orchd spawn command
+# Creates worktrees and launches AI agents for tasks
+
+cmd_spawn() {
+	local target="${1:-}"
+
+	require_project
+
+	local runner
+	runner=$(detect_runner)
+	runner_validate "$runner"
+
+	if [[ "$target" == "--all" ]]; then
+		_spawn_all_ready "$runner"
+	elif [[ -n "$target" ]]; then
+		_spawn_single "$target" "$runner"
+	else
+		die "usage: orchd spawn <task-id> | orchd spawn --all"
+	fi
+}
+
+_spawn_single() {
+	local task_id=$1
+	local runner=$2
+
+	task_exists "$task_id" || die "task not found: $task_id"
+
+	local status
+	status=$(task_status "$task_id")
+
+	case "$status" in
+	running)
+		die "task already running: $task_id"
+		;;
+	merged)
+		die "task already merged: $task_id"
+		;;
+	done)
+		printf 'task already done: %s (use orchd merge to integrate)\n' "$task_id"
+		return 0
+		;;
+	esac
+
+	# Check dependencies
+	if ! task_is_ready "$task_id"; then
+		local deps
+		deps=$(task_get "$task_id" "deps" "")
+		die "task has unmet dependencies: $task_id (deps: $deps)"
+	fi
+
+	local branch="agent-${task_id}"
+	local worktree_base
+	worktree_base=$(config_get "worktree_dir" ".worktrees")
+	local worktree_path="$PROJECT_ROOT/$worktree_base/$branch"
+
+	# Create worktree
+	worktree_create "$PROJECT_ROOT" "$branch" "$worktree_path" || {
+		die "failed to create worktree for task: $task_id"
+	}
+
+	# Build kickoff prompt
+	local prompt
+	prompt=$(_build_kickoff_prompt "$task_id" "$worktree_path")
+
+	# Record task metadata
+	task_set "$task_id" "branch" "$branch"
+	task_set "$task_id" "worktree" "$worktree_path"
+	task_set "$task_id" "runner" "$runner"
+	task_set "$task_id" "status" "running"
+
+	# Launch agent
+	if runner_exec "$runner" "$task_id" "$prompt" "$worktree_path"; then
+		printf 'spawned: %-20s branch=%-25s runner=%s\n' "$task_id" "$branch" "$runner"
+		log_event "INFO" "task spawned: $task_id (branch=$branch runner=$runner)"
+	else
+		task_set "$task_id" "status" "failed"
+		die "failed to spawn agent for task: $task_id"
+	fi
+}
+
+_spawn_all_ready() {
+	local runner=$1
+	local max_parallel
+	max_parallel=$(config_get "max_parallel" "3")
+
+	local spawned=0
+	local skipped=0
+	local running=0
+
+	# Count currently running
+	local task_id
+	while IFS= read -r task_id; do
+		[[ -z "$task_id" ]] && continue
+		if [[ "$(task_status "$task_id")" == "running" ]]; then
+			running=$((running + 1))
+		fi
+	done <<<"$(task_list_ids)"
+
+	printf 'scanning tasks... (max_parallel=%s, currently_running=%s)\n\n' "$max_parallel" "$running"
+
+	while IFS= read -r task_id; do
+		[[ -z "$task_id" ]] && continue
+
+		if ((running + spawned >= max_parallel)); then
+			printf 'max parallel limit reached (%s), stopping\n' "$max_parallel"
+			break
+		fi
+
+		if task_is_ready "$task_id"; then
+			_spawn_single "$task_id" "$runner"
+			spawned=$((spawned + 1))
+		else
+			local status
+			status=$(task_status "$task_id")
+			if [[ "$status" == "pending" ]]; then
+				skipped=$((skipped + 1))
+			fi
+		fi
+	done <<<"$(task_list_ids)"
+
+	printf '\nspawned: %d  skipped (waiting for deps): %d  already running: %d\n' \
+		"$spawned" "$skipped" "$running"
+}
+
+_build_kickoff_prompt() {
+	local task_id=$1
+	local worktree_path=$2
+
+	local template_file="$ORCHD_LIB_DIR/../templates/kickoff.prompt"
+	if [[ ! -f "$template_file" ]]; then
+		# Fallback: minimal prompt
+		printf 'TASK: %s\nIMPLEMENT: %s\nACCEPTANCE: %s\n' \
+			"$task_id" \
+			"$(task_get "$task_id" "description" "")" \
+			"$(task_get "$task_id" "acceptance" "")"
+		return
+	fi
+
+	local prompt
+	prompt=$(cat "$template_file")
+
+	local title description acceptance role
+	title=$(task_get "$task_id" "title" "$task_id")
+	description=$(task_get "$task_id" "description" "Implement $task_id")
+	acceptance=$(task_get "$task_id" "acceptance" "All tests pass")
+	role=$(task_get "$task_id" "role" "domain")
+
+	prompt=${prompt//\{task_id\}/$task_id}
+	prompt=${prompt//\{task_title\}/$title}
+	prompt=${prompt//\{task_description\}/$description}
+	prompt=${prompt//\{acceptance_criteria\}/$acceptance}
+	prompt=${prompt//\{agent_role\}/$role}
+	prompt=${prompt//\{worktree_path\}/$worktree_path}
+
+	printf '%s\n' "$prompt"
+}

@@ -1,0 +1,38 @@
+You are an expert software architect and project planner.
+
+Given the following project description, produce a task breakdown as a dependency DAG.
+
+## Project Description
+
+{project_description}
+
+## Current Codebase Context
+
+{codebase_context}
+
+## Instructions
+
+Analyze the project and produce a structured task list. Each task must have:
+- A short unique ID (lowercase, hyphenated, e.g. "setup-backend", "auth-api")
+- A clear title
+- A role: domain | quality | ops
+- Dependencies: comma-separated task IDs that must complete before this task (empty if none)
+- A concise description of what the agent should implement
+- Acceptance criteria (specific, testable conditions)
+
+Output ONLY in this exact format, one task per block, separated by blank lines:
+
+TASK: <id>
+TITLE: <title>
+ROLE: <role>
+DEPS: <comma-separated dependency IDs or "none">
+DESCRIPTION: <what to implement>
+ACCEPTANCE: <testable acceptance criteria>
+
+Rules:
+- Order tasks so that independent ones come first
+- Maximize parallelism: keep dependencies minimal
+- Include at least one quality task (tests, linting)
+- Include an ops task if CI/CD or deployment is relevant
+- Keep tasks focused: each should be completable by a single agent
+- Use realistic branch names derived from task IDs (e.g. agent-<task-id>)

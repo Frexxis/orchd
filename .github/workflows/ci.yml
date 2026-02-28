@@ -14,10 +14,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: Lint bin/orchd
-        run: shellcheck bin/orchd
-      - name: Lint tests/smoke.sh
-        run: shellcheck tests/smoke.sh
+      - name: Lint all shell scripts
+        run: |
+          shellcheck --exclude=SC1091 \
+            bin/orchd \
+            lib/core.sh \
+            lib/runner.sh \
+            lib/cmd/init.sh \
+            lib/cmd/plan.sh \
+            lib/cmd/spawn.sh \
+            lib/cmd/board.sh \
+            lib/cmd/check.sh \
+            lib/cmd/merge.sh \
+            tests/smoke.sh
 
   test:
     name: Smoke Tests

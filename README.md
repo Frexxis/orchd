@@ -1,178 +1,206 @@
 # orchd
 
-Minimal toolkit + runbook for **multi-agent engineering orchestration**.
+Autonomous AI agent orchestrator for software engineering.
 
-Coordinate multiple AI coding agents working in parallel on a single codebase — with clear dependency ordering, evidence-based quality gates, and conflict-free merges.
+Tell orchd what to build. It breaks the project into tasks, spawns AI agents in parallel, monitors their progress, runs quality gates, and merges everything — fully autonomous.
 
-## Why orchd?
+## How It Works
 
-When you run multiple AI agents (Codex CLI, Copilot, Cursor, etc.) on the same repo, things break fast: merge conflicts, untested code sneaking in, no visibility into what each agent is doing. **orchd** solves this with:
+```
+You: "Build a REST API with auth, tests, and CI"
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │    orchd plan          │  → AI generates task DAG
+        │    orchd spawn --all   │  → agents start in parallel
+        │    orchd board --watch │  → live dashboard
+        │    orchd check --all   │  → quality gates
+        │    orchd merge --all   │  → DAG-ordered merge
+        └───────────────────────┘
+                    │
+                    ▼
+            Done. Ship it.
+```
 
-- **A runbook** — battle-tested decision framework for orchestrating parallel agent work (dependency DAG, checkpoint design, merge queue rules, quality gates)
-- **A monitor** — lightweight tmux daemon that watches your repo for branch/ref changes in real time, without touching your code
+## Quick Start
 
-No frameworks, no dependencies beyond `git` and `tmux`. Just a single shell script and a runbook.
+```bash
+# Install
+git clone https://github.com/Frexxis/orchd.git
+cd orchd && chmod +x bin/orchd
+mkdir -p ~/.local/bin && ln -sf "$PWD/bin/orchd" ~/.local/bin/orchd
+
+# Initialize in your project
+cd /path/to/your/project
+orchd init .
+
+# Plan → Spawn → Monitor → Check → Merge
+orchd plan "build a REST API with auth, tests, and CI"
+orchd spawn --all
+orchd board --watch
+orchd check --all
+orchd merge --all
+```
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────┐
-│            Human / AI Orchestrator           │
-│         (follows orchestrator-runbook)       │
-├──────────────────────────────────────────────┤
-│                                              │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐     │
-│  │ Domain   │ │ Quality  │ │   Ops    │     │
-│  │ Agents   │ │ Agents   │ │  Agents  │     │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘     │
-│       └─────────────┼────────────┘           │
-│                     │                        │
-│          ┌──────────▼──────────┐             │
-│          │   Git Repository    │             │
-│          │  (branch-per-task)  │             │
-│          └──────────┬──────────┘             │
-│                     │                        │
-│          ┌──────────▼──────────┐             │
-│          │   orchd monitor     │  ← bin/orchd│
-│          │  (tmux daemon)      │             │
-│          │  - git fetch + diff │             │
-│          │  - ref tracking     │             │
-│          │  - change logging   │             │
-│          └─────────────────────┘             │
-│                                              │
-│  State: ~/.orchd/<session>/                  │
-│    ├── snapshot.txt   (latest git status)    │
-│    ├── refs.last      (previous ref state)   │
-│    └── changes.log    (append-only diff log) │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                  orchd orchestrator                   │
+│                                                      │
+│  plan ──► spawn ──► monitor ──► check ──► merge      │
+│    │        │          │          │          │        │
+│    ▼        ▼          ▼          ▼          ▼        │
+│  ┌────┐ ┌──────────────────────────────┐ ┌────────┐  │
+│  │ AI │ │     Agent Pool (tmux)        │ │ Git    │  │
+│  │DAG │ │                              │ │ Merge  │  │
+│  │    │ │ ┌────────┐ ┌────────┐        │ │ Queue  │  │
+│  │ T1 │ │ │Agent 1 │ │Agent 2 │ ...    │ │        │  │
+│  │ T2─┤ │ │backend │ │frontend│        │ │ T1→main│  │
+│  │ T3 │ │ │worktree│ │worktree│        │ │ T2→main│  │
+│  └────┘ │ └────────┘ └────────┘        │ │ T3→main│  │
+│         └──────────────────────────────┘ └────────┘  │
+│                                                      │
+│  Runners: codex │ claude │ opencode │ aider │ custom │
+└──────────────────────────────────────────────────────┘
 ```
 
-## What's Included
+## Commands
 
-| File | Description |
+### Orchestration (the main workflow)
+
+| Command | Description |
 |---|---|
-| `bin/orchd` | Tiny tmux-based git monitor daemon (~170 lines of Bash) |
-| `orchestrator-runbook.md` | Comprehensive orchestration runbook (tool-agnostic; Codex CLI examples) |
+| `orchd init [dir]` | Initialize orchd in a project (creates `.orchd.toml`) |
+| `orchd plan "<description>"` | Use AI to generate a task DAG from a description |
+| `orchd spawn <task\|--all>` | Create git worktrees and launch AI agents |
+| `orchd board [--watch]` | Live terminal dashboard showing all agent status |
+| `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
+| `orchd merge <task\|--all>` | Merge completed tasks in dependency order |
 
-## Requirements
+### Monitor (background repo watcher)
 
-- `git`
-- `tmux`
-- Standard Unix utilities (`awk`, `diff`, `cmp`, `sort`, `sed`)
+| Command | Description |
+|---|---|
+| `orchd start [dir] [interval]` | Start background git monitor (tmux daemon) |
+| `orchd list` | List active monitor sessions |
+| `orchd status <session>` | Show latest snapshot |
+| `orchd attach <session>` | Attach to monitor session |
+| `orchd stop <session>` | Stop monitor |
 
-## Install
+## Supported AI Runners
 
-```bash
-git clone https://github.com/Frexxis/orchd.git
-cd orchd
-chmod +x bin/orchd
-mkdir -p ~/.local/bin
-ln -sf "$PWD/bin/orchd" ~/.local/bin/orchd
-```
+orchd auto-detects your installed AI CLI tool, or you can set it in `.orchd.toml`:
 
-Make sure `~/.local/bin` is in your `PATH`.
-
-## Usage
-
-### Start monitoring a repo
-
-```bash
-orchd start /path/to/repo 30    # fetch every 30 seconds
-```
-
-### Check active monitors
-
-```bash
-orchd list
-```
-
-### View status and latest snapshot
-
-```bash
-orchd status orchd-<repo>
-```
-
-### Attach to the monitor session (live view)
-
-```bash
-orchd attach orchd-<repo>
-```
-
-### Stop monitoring
-
-```bash
-orchd stop orchd-<repo>
-```
-
-### Full help
-
-```bash
-orchd --help
-```
+| Runner | CLI | Status |
+|---|---|---|
+| Codex CLI | `codex` | Supported |
+| Claude Code | `claude` | Supported |
+| OpenCode | `opencode` | Supported |
+| Aider | `aider` | Supported |
+| Custom | any | Supported (via template) |
 
 ## Configuration
 
-orchd is configured via environment variables:
+After `orchd init`, edit `.orchd.toml`:
 
-| Variable | Default | Description |
-|---|---|---|
-| `ORCHD_BRANCH_REGEX` | `^origin/(main\|agent-\|orchestrator/)` | Regex filter for which remote refs to track |
-| `ORCHD_STATE_DIR` | `~/.orchd` | Directory for state files |
-| `ORCHD_SESSION` | `orchd-<repo_basename>` | Override auto-generated session name |
+```toml
+[project]
+name = "my-project"
+description = "A REST API with authentication"
+base_branch = "main"
+
+[orchestrator]
+runner = "claude"          # or: codex, opencode, aider, custom
+max_parallel = 3           # max concurrent agents
+worktree_dir = ".worktrees"
+monitor_interval = 30
+
+[quality]
+lint_cmd = "npm run lint"  # run during orchd check
+test_cmd = "npm test"      # run during orchd check
+build_cmd = "npm run build"
+
+# [runners.custom]
+# custom_runner_cmd = "my-agent --prompt {prompt} --dir {worktree}"
+```
+
+## Project Structure
+
+```
+orchd/
+├── bin/orchd                    # Main entry point / dispatcher
+├── lib/
+│   ├── core.sh                  # Config, state, worktree, logging
+│   ├── runner.sh                # Multi-runner adapter system
+│   └── cmd/
+│       ├── init.sh              # orchd init
+│       ├── plan.sh              # orchd plan (AI task DAG generation)
+│       ├── spawn.sh             # orchd spawn (worktree + agent launch)
+│       ├── board.sh             # orchd board (live TUI dashboard)
+│       ├── check.sh             # orchd check (quality gates)
+│       └── merge.sh             # orchd merge (DAG-ordered integration)
+├── templates/
+│   ├── plan.prompt              # Prompt template for task planning
+│   └── kickoff.prompt           # Prompt template for agent kickoff
+├── orchestrator-runbook.md      # Comprehensive orchestration runbook
+├── tests/smoke.sh               # Smoke tests (34 tests)
+├── .github/workflows/ci.yml    # CI: ShellCheck + smoke tests
+├── LICENSE
+└── README.md
+```
 
 ## The Runbook
 
-The `orchestrator-runbook.md` covers 17 sections of practical orchestration guidance:
+`orchestrator-runbook.md` is a 17-section decision-support document covering:
 
-1. **Core Principles** — bridge-free orchestration, dependency-first planning, evidence before merge
-2. **Roles** — orchestrator, domain agents, quality agents, ops agents
-3. **Agent CLI Standard** — session lifecycle, JSON event logging, smoke tests
-4. **Prompt Contract** — minimum fields for kickoff prompts (agent, task, branch, status)
-5. **Launch Sequence** — preflight, worktree setup, kickoff, checkpoint, review, merge, regression, sync
-6. **Parallelization Matrix** — when to run agents in parallel vs. gated
-7. **Checkpoint Design** — structural (CP1) and final (CP2) checkpoints
-8. **Merge Queue Rules** — topological sort by dependency DAG
-9. **Quality Gate Minimums** — lint, test, task report, risk/rollback notes
-10. **Conflict & Recovery** — schema conflicts, contract drift, resolution strategies
-11. **Evidence Standard** — CMD + RESULT + OUTPUT format for agent reports
-12. **Handoff Protocol** — closeout report, queue state, risks, next tickets
-13. **Anti-Patterns** — common mistakes to avoid
-14. **Command Reference** — practical CLI snippets
-15. **Success Criteria** — lead time, rework rate, merge conflicts, regression-free delivery
-16. **Judgment Margin** — runbook as decision support, not a rigid checklist
-17. **Reading List** — Codex CLI, LangGraph, AutoGen, CrewAI
+Core principles, roles, agent CLI standards, prompt contracts, launch sequences, parallelization decisions, checkpoint design, merge queue rules, quality gate minimums, conflict recovery, evidence standards, secret hygiene, handoff protocols, anti-patterns, command reference, success criteria, and further reading.
 
 > The runbook is tool-agnostic. Examples use Codex CLI, but the principles apply to any agent runner.
 
-## Design Principles
+## How orchd Works Internally
 
-- **Monitor-only** — `orchd` never merges, commits, or pushes. It only reads.
-- **Zero dependencies** — just Bash, git, and tmux. No package managers.
-- **Append-only logging** — `changes.log` is never modified, only appended to (with automatic rotation at ~10 MB).
-- **Tool-agnostic** — the runbook works with any agent runner; Codex CLI is used only as an example.
+1. **`orchd plan`** sends your project description to an AI runner with a structured prompt template. The AI returns a task DAG (dependency graph). orchd parses this into individual task state files under `.orchd/tasks/`.
+
+2. **`orchd spawn`** reads the DAG, finds tasks whose dependencies are satisfied, creates a git worktree + branch for each, builds a kickoff prompt from the template, and launches the AI agent in a tmux session.
+
+3. **`orchd board`** reads task state files and checks tmux sessions to show a live dashboard with status, progress bar, and agent health.
+
+4. **`orchd check`** verifies each task: agent exited, commits exist on branch, TASK_REPORT.md present, lint/test/build pass. Tasks that pass all gates are marked `done`.
+
+5. **`orchd merge`** performs topological sort on the DAG and merges `done` tasks into the base branch in dependency order, with post-merge regression tests.
+
+## Requirements
+
+- `git`, `tmux`
+- Standard Unix utilities (`awk`, `diff`, `cmp`, `sort`, `sed`)
+- At least one AI runner: `codex`, `claude`, `opencode`, or `aider`
 
 ## Testing
 
-Run the smoke tests:
-
 ```bash
-./tests/smoke.sh
+./tests/smoke.sh              # 34 smoke tests
+shellcheck bin/orchd lib/*.sh lib/cmd/*.sh tests/smoke.sh
 ```
 
-Lint with ShellCheck:
+## Design Principles
 
-```bash
-shellcheck bin/orchd tests/smoke.sh
-```
+- **Fully autonomous** — from planning to merge, no human intervention required
+- **Runner-agnostic** — plug in any AI CLI tool
+- **Zero framework dependencies** — pure Bash, git, tmux
+- **DAG-first** — dependency graph drives parallelism and merge order
+- **Evidence-based** — no task is merged without quality gate proof
+- **Safe by default** — worktree isolation, no-force merges, post-merge regression
 
 ## Contributing
 
-Contributions are welcome! Some areas where help would be appreciated:
+Contributions welcome:
 
-- English translation of `orchestrator-runbook.md`
-- Additional agent runner examples (beyond Codex CLI)
-- More test coverage
-- Packaging for Homebrew, AUR, etc.
+- New runner adapters
+- TUI improvements for `orchd board`
+- More quality gate checks
+- Packaging (Homebrew, AUR, etc.)
+- Real-world usage reports
 
 ## License
 

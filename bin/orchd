@@ -9,24 +9,59 @@ for dep in git tmux awk cmp diff; do
   }
 done
 
+# --- Resolve paths ---
+SELF="$(readlink -f "$0")"
+ORCHD_LIB_DIR="$(dirname "$SELF")/../lib"
+
+# --- Source libraries ---
+# shellcheck source=../lib/core.sh
+source "$ORCHD_LIB_DIR/core.sh"
+# shellcheck source=../lib/runner.sh
+source "$ORCHD_LIB_DIR/runner.sh"
+# shellcheck source=../lib/cmd/init.sh
+source "$ORCHD_LIB_DIR/cmd/init.sh"
+# shellcheck source=../lib/cmd/plan.sh
+source "$ORCHD_LIB_DIR/cmd/plan.sh"
+# shellcheck source=../lib/cmd/spawn.sh
+source "$ORCHD_LIB_DIR/cmd/spawn.sh"
+# shellcheck source=../lib/cmd/board.sh
+source "$ORCHD_LIB_DIR/cmd/board.sh"
+# shellcheck source=../lib/cmd/check.sh
+source "$ORCHD_LIB_DIR/cmd/check.sh"
+# shellcheck source=../lib/cmd/merge.sh
+source "$ORCHD_LIB_DIR/cmd/merge.sh"
+
+# --- Usage ---
 usage() {
   cat <<'EOF'
-orchd - tiny always-on orchestration monitor (tmux)
+orchd - autonomous AI agent orchestrator
 
-Usage:
-  orchd start [repo_dir] [interval_seconds]
-  orchd attach [session]
-  orchd stop [session]
-  orchd list
-  orchd status [session]
+Orchestration commands:
+  orchd init   [dir] [description]     Initialize orchd in a project
+  orchd plan   "<description>"         Generate task DAG with AI
+  orchd spawn  <task-id> | --all       Create worktrees & launch agents
+  orchd board  [--watch]               Live agent status dashboard
+  orchd check  <task-id> | --all       Run quality gates on tasks
+  orchd merge  <task-id> | --all       Merge completed tasks (DAG order)
+
+Monitor commands:
+  orchd start  [repo_dir] [interval]   Start background repo monitor
+  orchd attach <session>               Attach to monitor session
+  orchd stop   <session>               Stop monitor session
+  orchd list                           List active sessions
+  orchd status <session>               Show monitor snapshot
 
 Environment:
-  ORCHD_BRANCH_REGEX   Regex for remote refs to track (default: ^origin/(main|agent-|orchestrator/))
-  ORCHD_STATE_DIR      State directory (default: $HOME/.orchd)
+  ORCHD_BRANCH_REGEX   Regex for refs to track (default: ^origin/(main|agent-|orchestrator/))
+  ORCHD_STATE_DIR      Monitor state dir (default: $HOME/.orchd)
 
-Notes:
-  - Monitor only: does not merge/commit/push.
-  - Writes snapshots under ORCHD_STATE_DIR/<session>/
+Workflow:
+  orchd init .
+  orchd plan "build a REST API with auth, tests, and CI"
+  orchd spawn --all
+  orchd board --watch
+  orchd check --all
+  orchd merge --all
 EOF
 }
 
@@ -35,10 +70,11 @@ die() {
   exit 1
 }
 
-SELF="$(readlink -f "$0")"
-
+# --- Command parsing ---
 cmd=${1:-}
 shift || true
+
+# --- Monitor helpers (kept from original) ---
 
 state_dir_default() {
   printf '%s\n' "${ORCHD_STATE_DIR:-$HOME/.orchd}"
@@ -114,7 +150,29 @@ run_daemon() {
   done
 }
 
+# --- Dispatch ---
 case "$cmd" in
+  # === Orchestration commands ===
+  init)
+    cmd_init "$@"
+    ;;
+  plan)
+    cmd_plan "$@"
+    ;;
+  spawn)
+    cmd_spawn "$@"
+    ;;
+  board)
+    cmd_board "$@"
+    ;;
+  check)
+    cmd_check "$@"
+    ;;
+  merge)
+    cmd_merge "$@"
+    ;;
+
+  # === Monitor commands (original) ===
   start)
     repo_dir=${1:-$PWD}
     interval=${2:-30}
@@ -167,6 +225,8 @@ case "$cmd" in
       die "not running: $session"
     fi
     ;;
+
+  # === Help / fallback ===
   -h|--help|help|'')
     usage
     ;;

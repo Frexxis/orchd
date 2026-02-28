@@ -39,12 +39,30 @@ Practical note:
 
 - If `codex` is a shell function/alias, invoking the binary directly in orchestrator automation is more deterministic.
 
+### 3.1.1 Default mode: full access
+
+This runbook defaults to Codex running in **full access** mode:
+
+- Flag: `--dangerously-bypass-approvals-and-sandbox`
+- This disables sandbox/approval layers, so agents can (within a worktree) run `git commit` and socket-requiring tests.
+- Safety note: Use this only in an isolated worktree with tight scope and evidence gates.
+
 ### 3.2 Session Lifecycle
 
 A separate session is opened for each ticket and the same session is resumed for follow-ups.
 
 - **Start:** `codex exec "<kickoff prompt>" -C <worktree> --json`
 - **Resume:** `codex exec resume <thread_id> "<follow-up prompt>" --json`
+
+Full access practical form:
+
+```bash
+CODEX_BIN="${CODEX_BIN:-$(command -v codex)}"
+CODEX_FLAGS="${CODEX_FLAGS:---dangerously-bypass-approvals-and-sandbox}"
+
+"$CODEX_BIN" $CODEX_FLAGS exec "<kickoff prompt>" -C <worktree> --json
+"$CODEX_BIN" $CODEX_FLAGS exec resume <thread_id> "<follow-up prompt>" --json
+```
 - **Rule:** No new session is opened until the current ticket is closed (exception: session corruption).
 
 ### 3.3 JSON Event Logging
@@ -62,17 +80,18 @@ Purpose: Quickly verify that Codex CLI can (1) start a new session and (2) resum
 set -euo pipefail
 
 CODEX_BIN="${CODEX_BIN:-$(command -v codex)}"
+CODEX_FLAGS="${CODEX_FLAGS:---dangerously-bypass-approvals-and-sandbox}"
 OUT_DIR="${OUT_DIR:-/tmp/codex-orch-smoke}"
 mkdir -p "$OUT_DIR"
 
 # 1) Start a new session (capture thread_id)
-"$CODEX_BIN" exec "Remember this exact token: SMOKE42. Reply only READY." \
+"$CODEX_BIN" $CODEX_FLAGS exec "Remember this exact token: SMOKE42. Reply only READY." \
   --json > "$OUT_DIR/ev1.jsonl"
 
 THREAD_ID=$(jq -r 'select(.type=="thread.started")|.thread_id' "$OUT_DIR/ev1.jsonl" | head -n 1)
 
 # 2) Resume the same session
-"$CODEX_BIN" exec resume "$THREAD_ID" "What is the token? Reply only it." \
+"$CODEX_BIN" $CODEX_FLAGS exec resume "$THREAD_ID" "What is the token? Reply only it." \
   --json > "$OUT_DIR/ev2.jsonl"
 
 TOKEN=$(jq -r 'select(.type=="item.completed" and .item.type=="agent_message")|.item.text' "$OUT_DIR/ev2.jsonl" | tail -n 1)
@@ -259,10 +278,12 @@ Strongly avoid the following:
 
 ```bash
 # Start a ticket
-"${CODEX_BIN:-codex}" exec "<kickoff prompt>" -C .worktrees/<branch> --json
+CODEX_BIN="${CODEX_BIN:-$(command -v codex)}"
+CODEX_FLAGS="${CODEX_FLAGS:---dangerously-bypass-approvals-and-sandbox}"
+"$CODEX_BIN" $CODEX_FLAGS exec "<kickoff prompt>" -C .worktrees/<branch> --json
 
 # Resume the same ticket
-"${CODEX_BIN:-codex}" exec resume <thread_id> "<follow-up>" --json
+"$CODEX_BIN" $CODEX_FLAGS exec resume <thread_id> "<follow-up>" --json
 
 # General quality gate (adapt to your project stack)
 <lint-command>
