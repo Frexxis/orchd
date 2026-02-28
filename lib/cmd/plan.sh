@@ -3,9 +3,29 @@
 # Uses AI to generate a task DAG from a project description
 
 cmd_plan() {
-	local description="$*"
+	# Modes:
+	#   orchd plan "<description>"     (generate via AI)
+	#   orchd plan --file <path>       (load an existing plan output)
+	#   orchd plan --stdin             (read plan output from stdin)
+	local mode="${1:-}"
+	if [[ "$mode" == "--file" ]]; then
+		local plan_file="${2:-}"
+		[[ -n "$plan_file" ]] || die "usage: orchd plan --file <path>"
+		require_project
+		[[ -f "$plan_file" ]] || die "plan file not found: $plan_file"
+		cp "$plan_file" "$ORCHD_DIR/plan_output.txt"
+		_parse_plan_output "$ORCHD_DIR/plan_output.txt"
+		return 0
+	fi
+	if [[ "$mode" == "--stdin" ]]; then
+		require_project
+		cat >"$ORCHD_DIR/plan_output.txt"
+		_parse_plan_output "$ORCHD_DIR/plan_output.txt"
+		return 0
+	fi
 
-	[[ -n "$description" ]] || die "usage: orchd plan \"<project description>\""
+	local description="$*"
+	[[ -n "$description" ]] || die "usage: orchd plan \"<project description>\" | orchd plan --file <path> | orchd plan --stdin"
 
 	require_project
 

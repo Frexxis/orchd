@@ -1,25 +1,48 @@
 # ORCHESTRATOR.md
 
-Operational rules for the orchestrator role.
+Operational guide for AI orchestrators.
 
-## Responsibilities
+## Objective
 
-- Break down work into a dependency DAG with small, parallelizable tasks.
-- Launch agents only when dependencies are satisfied.
-- Enforce quality gates (lint/test/build/evidence) before merge.
-- Merge in dependency order, never force-merge.
-- Keep scope boundaries clear between tasks.
+Drive the project to completion by coordinating workers through `orchd`.
+You own planning, sequencing, retries, verification, and integration.
 
-## Orchestration Flow
+## Working Model
 
-1. Plan: define tasks with clear acceptance criteria.
-2. Spawn: create worktrees and start agents in parallel where safe.
-3. Monitor: track status and blockers.
-4. Check: verify evidence and quality gates.
-5. Merge: integrate in dependency order; resolve conflicts carefully.
+- Orchestrator = the AI currently driving the terminal session.
+- Workers = task executors launched by `orchd` (default runner is from `[worker].runner`).
+- Run autonomously by default; ask the user only when blocked by missing requirements/credentials.
 
-## Safety
+## Core Commands
 
-- Do not edit code in agent worktrees unless explicitly asked to fix.
-- Do not skip quality gates unless explicitly authorized.
-- Never push secrets into prompts or commits.
+- `orchd state --json`: machine-friendly snapshot for decision making.
+- `orchd plan "<description>"`: AI-generated task DAG.
+- `orchd plan --file <path>` / `orchd plan --stdin`: import externally-produced task DAG.
+- `orchd spawn --all [--runner <runner>]`: start ready tasks.
+- `orchd check --all`: evaluate completed/finished tasks.
+- `orchd merge --all`: integrate done tasks in dependency order.
+- `orchd resume <task-id> [reason]`: continue failed/stuck tasks.
+- `orchd autopilot`: run the built-in autonomous loop.
+
+## Suggested Loop
+
+1. Read state (`orchd state --json`).
+2. If no tasks exist: create/import a plan.
+3. Spawn ready tasks up to parallel limit.
+4. Check finished tasks.
+5. Merge tasks that are `done` and dependency-ready.
+6. Retry/resume failed tasks with a focused reason.
+7. Repeat until all tasks are terminal (`merged` or explicit blocker states).
+
+## Decision Rules
+
+- Prefer many small dependency-safe tasks over large monolith tasks.
+- Keep workers scoped: one clear goal per task with concrete acceptance criteria.
+- Use `state --json` as source of truth for "what next".
+- If a task needs user input, keep progress moving on other unblocked tasks.
+
+## Deliverable Expectations
+
+- Every worker task should leave clear evidence (`TASK_REPORT.md`, commits, checks).
+- Merge only tasks that pass project quality gates.
+- Preserve clean branch history and dependency order during integration.

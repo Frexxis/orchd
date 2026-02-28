@@ -67,12 +67,13 @@ config_get() {
 					if (sec == wanted_section) return 0
 					return 999
 				}
-				if (sec == "orchestrator") return 1
-				if (sec == "project") return 2
-				if (sec == "quality") return 3
-				if (sec ~ /^runners\./) return 4
-				if (sec == "") return 5
-				return 6
+				if (sec == "worker") return 1
+				if (sec == "orchestrator") return 2
+				if (sec == "project") return 3
+				if (sec == "quality") return 4
+				if (sec ~ /^runners\./) return 5
+				if (sec == "") return 6
+				return 7
 			}
 
 			{
@@ -364,6 +365,11 @@ EOF
 Read AGENTS.md first and follow the role routing rules.
 EOF
 		;;
+	OPENCODE.md)
+		cat <<'EOF'
+Read AGENTS.md first and follow the role routing rules.
+EOF
+		;;
 	*)
 		return 1
 		;;
@@ -408,7 +414,7 @@ write_doc_file() {
 ensure_agent_docs() {
 	local dir=$1
 	local doc
-	for doc in AGENTS.md ORCHESTRATOR.md WORKER.md CLAUDE.md; do
+	for doc in AGENTS.md ORCHESTRATOR.md WORKER.md CLAUDE.md OPENCODE.md; do
 		write_doc_file "$dir/$doc" "if_missing" || die "failed to write $doc"
 	done
 }
@@ -416,7 +422,7 @@ ensure_agent_docs() {
 refresh_agent_docs() {
 	local dir=$1
 	local doc
-	for doc in AGENTS.md ORCHESTRATOR.md WORKER.md CLAUDE.md; do
+	for doc in AGENTS.md ORCHESTRATOR.md WORKER.md CLAUDE.md OPENCODE.md; do
 		write_doc_file "$dir/$doc" "refresh" || die "failed to write $doc"
 		case "$ORCHD_DOC_STATUS" in
 		created)

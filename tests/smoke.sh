@@ -259,6 +259,12 @@ else
 	fail "CLAUDE.md not created"
 fi
 
+if [[ -f "$INIT_DIR/OPENCODE.md" ]]; then
+	pass "OPENCODE.md created"
+else
+	fail "OPENCODE.md not created"
+fi
+
 printf '\n[7] Orchestration commands (no-project validation)\n'
 # These should fail gracefully when not in an orchd project
 assert_exit_nonzero "plan without project fails" "$ORCHD" plan "test"
@@ -281,6 +287,7 @@ assert_output_contains "help shows plan" "plan" "$ORCHD" --help
 assert_output_contains "help shows review" "review" "$ORCHD" --help
 assert_output_contains "help shows spawn" "spawn" "$ORCHD" --help
 assert_output_contains "help shows board" "board" "$ORCHD" --help
+assert_output_contains "help shows state" "state" "$ORCHD" --help
 assert_output_contains "help shows check" "check" "$ORCHD" --help
 assert_output_contains "help shows merge" "merge" "$ORCHD" --help
 assert_output_contains "help shows resume" "resume" "$ORCHD" --help

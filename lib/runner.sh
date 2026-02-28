@@ -7,7 +7,14 @@
 
 detect_runner() {
 	local configured
-	configured=$(config_get "runner" "")
+	configured=$(config_get "worker.runner" "")
+	if [[ -z "$configured" ]]; then
+		# Backward compatibility: old configs stored this under [orchestrator] or root.
+		configured=$(config_get "orchestrator.runner" "")
+	fi
+	if [[ -z "$configured" ]]; then
+		configured=$(config_get "runner" "")
+	fi
 
 	if [[ -n "$configured" ]] && [[ "$configured" != "auto" ]]; then
 		printf '%s\n' "$configured"

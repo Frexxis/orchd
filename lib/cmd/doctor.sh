@@ -12,7 +12,13 @@ cmd_doctor() {
 	cd "$start_dir" || true
 
 	local runner_config runner_effective base_branch worktree_dir max_parallel
-	runner_config=$(config_get "runner" "")
+	runner_config=$(config_get "worker.runner" "")
+	if [[ -z "$runner_config" ]]; then
+		runner_config=$(config_get "orchestrator.runner" "")
+	fi
+	if [[ -z "$runner_config" ]]; then
+		runner_config=$(config_get "runner" "")
+	fi
 	runner_effective=$(detect_runner)
 	base_branch=$(config_get "base_branch" "main")
 	worktree_dir=$(config_get "worktree_dir" ".worktrees")

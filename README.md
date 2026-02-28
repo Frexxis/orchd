@@ -80,10 +80,13 @@ orchd merge --all
 |---|---|
 | `orchd init [dir]` | Initialize orchd in a project (creates `.orchd.toml`) |
 | `orchd plan "<description>"` | Use AI to generate a task DAG from a description |
+| `orchd plan --file <path>` | Load/parse an existing plan output file into `.orchd/tasks/` |
+| `orchd plan --stdin` | Read plan output from stdin and parse into `.orchd/tasks/` |
 | `orchd review [ref]` | Run review-only agent on changes or a ref |
-| `orchd spawn <task\|--all>` | Create git worktrees and launch AI agents |
+| `orchd spawn <task\|--all> [--runner <runner>]` | Create git worktrees and launch AI agents |
 | `orchd resume <task> [reason...]` | Resume/continue a task in its existing worktree |
 | `orchd board [--watch]` | Live terminal dashboard showing all agent status |
+| `orchd state [--json]` | Print a snapshot of task state (machine-friendly) |
 | `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
 | `orchd merge <task\|--all>` | Merge completed tasks in dependency order |
 | `orchd autopilot [poll_seconds]` | Fully autonomous: spawn/check/merge loop |
@@ -93,7 +96,7 @@ orchd merge --all
 | Command | Description |
 |---|---|
 | `orchd doctor [dir]` | Show effective config and auto-detected quality commands |
-| `orchd refresh-docs [dir]` | Refresh AGENTS/WORKER/ORCHESTRATOR/CLAUDE docs |
+| `orchd refresh-docs [dir]` | Refresh AGENTS/WORKER/ORCHESTRATOR/CLAUDE/OPENCODE docs |
 
 ### Monitor (background repo watcher)
 
@@ -128,11 +131,13 @@ description = "A REST API with authentication"
 base_branch = "main"
 
 [orchestrator]
-runner = "claude"          # or: codex, opencode, aider, custom
 max_parallel = 3           # max concurrent agents
 worktree_dir = ".worktrees"
 monitor_interval = 30      # monitor daemon tick (legacy)
 board_refresh = 5          # orchd board --watch refresh seconds
+
+[worker]
+runner = "claude"          # or: codex, opencode, aider, custom
 
 [quality]
 lint_cmd = "npm run lint"  # run during orchd check

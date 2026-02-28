@@ -3,12 +3,42 @@
 # Creates worktrees and launches AI agents for tasks
 
 cmd_spawn() {
-	local target="${1:-}"
+	local target=""
+	local runner_override=""
+	while (($# > 0)); do
+		case "$1" in
+		--all)
+			target="--all"
+			shift
+			;;
+		--runner | -r)
+			shift
+			runner_override="${1:-}"
+			[[ -n "$runner_override" ]] || die "usage: orchd spawn [--all|<task-id>] [--runner <runner>]"
+			shift
+			;;
+		-h | --help)
+			die "usage: orchd spawn <task-id> | orchd spawn --all [--runner <runner>]"
+			;;
+		*)
+			if [[ -z "$target" ]]; then
+				target="$1"
+				shift
+			else
+				die "usage: orchd spawn <task-id> | orchd spawn --all [--runner <runner>]"
+			fi
+			;;
+		esac
+	done
 
 	require_project
 
 	local runner
-	runner=$(detect_runner)
+	if [[ -n "$runner_override" ]]; then
+		runner="$runner_override"
+	else
+		runner=$(detect_runner)
+	fi
 	runner_validate "$runner"
 
 	if [[ "$target" == "--all" ]]; then
@@ -16,7 +46,7 @@ cmd_spawn() {
 	elif [[ -n "$target" ]]; then
 		_spawn_single "$target" "$runner"
 	else
-		die "usage: orchd spawn <task-id> | orchd spawn --all"
+		die "usage: orchd spawn <task-id> | orchd spawn --all [--runner <runner>]"
 	fi
 }
 

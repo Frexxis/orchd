@@ -52,6 +52,9 @@ name = "top-level"
 name = "project-name"
 base_branch = "main"
 
+[worker]
+runner = "claude"
+
 [orchestrator]
 runner = "codex"
 max_parallel = 4
@@ -68,13 +71,14 @@ EOF
 export PROJECT_ROOT="$TMPDIR_CONFIG"
 
 printf '[1] Unscoped key precedence\n'
-assert_eq "runner resolves to orchestrator section" "codex" "$(config_get "runner" "")"
+assert_eq "runner resolves to worker section" "claude" "$(config_get "runner" "")"
 assert_eq "base_branch resolves to project section" "main" "$(config_get "base_branch" "")"
 assert_eq "quality key resolves correctly" "npm test" "$(config_get "test_cmd" "")"
 assert_eq "unknown key uses default" "fallback" "$(config_get "does_not_exist" "fallback")"
 
 printf '\n[2] Explicit section addressing\n'
 assert_eq "project.name lookup works" "project-name" "$(config_get "project.name" "")"
+assert_eq "worker.runner lookup works" "claude" "$(config_get "worker.runner" "")"
 assert_eq "orchestrator.runner lookup works" "codex" "$(config_get "orchestrator.runner" "")"
 assert_eq "runners.custom.name lookup works" "custom-name" "$(config_get "runners.custom.name" "")"
 assert_eq "runners.custom.runner lookup works" "custom-runner" "$(config_get "runners.custom.runner" "")"

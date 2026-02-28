@@ -39,11 +39,15 @@ cmd_init() {
 	safe_description=${safe_description//$'\r'/\\r}
 
 	# Detect base branch
-	local base_branch="main"
+	local base_branch=""
 	if git -C "$project_dir" rev-parse --verify main >/dev/null 2>&1; then
 		base_branch="main"
 	elif git -C "$project_dir" rev-parse --verify master >/dev/null 2>&1; then
 		base_branch="master"
+	else
+		# Handles freshly initialized repos (no commits yet).
+		base_branch=$(git -C "$project_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+		[[ -n "$base_branch" ]] || base_branch="main"
 	fi
 
 	# Generate config
@@ -57,11 +61,13 @@ description = "$safe_description"
 base_branch = "$base_branch"
 
 [orchestrator]
-runner = "$runner"
 max_parallel = 3
 worktree_dir = ".worktrees"
 monitor_interval = 30
 board_refresh = 5
+
+[worker]
+runner = "$runner"
 
 [quality]
 lint_cmd = ""
@@ -98,6 +104,10 @@ EOF
 	printf '  state:   .orchd/\n'
 	printf '  runner:  %s\n' "$runner"
 	printf '  branch:  %s\n' "$base_branch"
+	if ! git -C "$project_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+		printf '\nwarning: git repo has no commits yet; orchd worktrees require at least 1 commit\n'
+		printf '  run: git commit --allow-empty -m "init"\n'
+	fi
 	printf '\nnext steps:\n'
 	printf '  1. edit .orchd.toml (set description, lint/test commands)\n'
 	printf '  2. orchd plan "build a REST API with auth and tests"\n'
