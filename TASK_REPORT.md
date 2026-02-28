@@ -2,19 +2,19 @@
 
 ## Summary
 
-- Required orchestrators to read `orchestrator-runbook.md` via AGENTS role routing.
-- Added an explicit runbook ACK requirement for orchestrators.
+- Improved `orchd plan` reliability: bounded context size, optional `--runner` override, and loud failure on empty output.
+- Captured plan runner stderr to `.orchd/plan_stderr.log` (no more silent codex auth/transport failures).
+- Saved raw codex JSONL to `.orchd/plan_raw.jsonl` for debugging.
 
 ## Files Modified/Created
 
-- AGENTS.md
-- lib/core.sh
-- ORCHESTRATOR.md
+- lib/cmd/plan.sh
 
 ## Tests Run
 
-- Not run (not requested)
+- ./tests/smoke.sh
+- ./tests/config_get.sh
 
 ## Risks/Notes
 
-- Existing projects should run `orchd refresh-docs` to pick up the runbook and updated orchestrator guidance.
+- New config knobs (optional): `orchestrator.plan_*` to bound plan context and avoid model context-limit issues.
