@@ -51,7 +51,8 @@ If present, `orchd check` will use them for that task (override > global config 
 4. Check finished tasks.
 5. Merge tasks that are `done` and dependency-ready.
 6. Retry/resume failed tasks with a focused reason.
-7. Repeat until all tasks are terminal (`merged` or explicit blocker states).
+7. When waiting, use `orchd await --all` instead of `sleep`.
+8. Repeat until all tasks are terminal (`merged` or explicit blocker states).
 
 ## Decision Rules
 

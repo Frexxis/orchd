@@ -112,6 +112,17 @@ Use `orchd autopilot --status|--logs|--stop` to monitor or stop the loop.
 
 If you only need a passive repo monitor, a tmux loop is sufficient.
 
+### 3.6 Waiting Without Stalling the Session
+
+Avoid `sleep` in the main orchestration session. Instead, block on orchd itself:
+
+```bash
+orchd await --all
+```
+
+This returns when an agent exits or a task becomes actionable (done/failed/conflict/needs_input),
+so the orchestrator can immediately run `orchd check --all` or `orchd merge --all`.
+
 - Monitor-only (safe): only reports `fetch/status` and branch SHA changes.
 - Example: `orchd start <repo_dir> 30` (see `~/.local/bin/orchd --help`)
 

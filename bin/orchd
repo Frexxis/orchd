@@ -54,6 +54,8 @@ source "$ORCHD_LIB_DIR/cmd/resume.sh"
 source "$ORCHD_LIB_DIR/cmd/autopilot.sh"
 # shellcheck source=../lib/cmd/state.sh
 source "$ORCHD_LIB_DIR/cmd/state.sh"
+# shellcheck source=../lib/cmd/await.sh
+source "$ORCHD_LIB_DIR/cmd/await.sh"
 
 # --- Usage ---
 usage() {
@@ -67,6 +69,7 @@ Orchestration commands:
   orchd spawn  <task-id> | --all       Create worktrees & launch agents
   orchd board  [--watch]               Live agent status dashboard
   orchd state  [--json]                Print task state snapshot
+  orchd await  [--all|<task-id>]       Block until a task changes or agent exits
   orchd check  <task-id> | --all       Run quality gates on tasks
   orchd merge  <task-id> | --all       Merge completed tasks (DAG order)
   orchd resume <task-id> [reason...]    Resume/continue a task in its worktree
@@ -209,6 +212,9 @@ case "$cmd" in
     ;;
   state)
     cmd_state "$@"
+    ;;
+  await)
+    cmd_await "$@"
     ;;
   check)
     cmd_check "$@"

@@ -13,10 +13,12 @@
 - Added optional per-task `LINT_CMD`/`TEST_CMD`/`BUILD_CMD` in plans; `orchd check` uses these as overrides (task > global config > auto-detect).
 - Added `orchd autopilot --daemon` with status/stop/logs controls so orchestration continues without manual prompts.
 - Updated orchestrator guidance and runbook to recommend daemon mode for long-running orchestration.
+- Added `orchd await` to block until an agent exits or a task becomes actionable, replacing manual `sleep` loops.
 
 ## Files Modified/Created
 
 - bin/orchd
+- lib/cmd/await.sh
 - WORKER.md
 - lib/core.sh
 - lib/cmd/check.sh
