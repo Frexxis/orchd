@@ -22,6 +22,7 @@ resolve_path() {
 
 # --- Resolve paths ---
 SELF="$(resolve_path "$0")"
+export ORCHD_BIN="$SELF"
 ORCHD_LIB_DIR="$(dirname "$SELF")/../lib"
 
 # --- Source libraries ---
@@ -70,6 +71,10 @@ Orchestration commands:
   orchd merge  <task-id> | --all       Merge completed tasks (DAG order)
   orchd resume <task-id> [reason...]    Resume/continue a task in its worktree
   orchd autopilot [poll_seconds]        Fully autonomous: spawn/check/merge loop
+  orchd autopilot --daemon [poll]       Run autopilot in background
+  orchd autopilot --status              Show autopilot daemon status
+  orchd autopilot --stop                Stop autopilot daemon
+  orchd autopilot --logs                Tail autopilot daemon log
   orchd doctor [dir]                   Show effective config and auto-detect
   orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR docs
 

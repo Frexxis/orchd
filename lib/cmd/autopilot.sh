@@ -4,9 +4,61 @@
 # Runs until all tasks reach a terminal state (merged/failed) or deadlock.
 
 cmd_autopilot() {
-	local poll_interval="${1:-}"
+	local mode=""
+	local poll_interval=""
+
+	case "${1:-}" in
+	-h | --help)
+		cat <<'EOF'
+usage:
+  orchd autopilot [poll_seconds]
+  orchd autopilot --daemon [poll_seconds]
+  orchd autopilot --status
+  orchd autopilot --stop
+  orchd autopilot --logs
+EOF
+		return 0
+		;;
+	--daemon | --start)
+		mode="daemon"
+		shift || true
+		;;
+	--status)
+		mode="status"
+		shift || true
+		;;
+	--stop)
+		mode="stop"
+		shift || true
+		;;
+	--logs)
+		mode="logs"
+		shift || true
+		;;
+	esac
+
+	poll_interval="${1:-}"
 
 	require_project
+
+	case "$mode" in
+	status)
+		_autopilot_status
+		return 0
+		;;
+	stop)
+		_autopilot_stop
+		return 0
+		;;
+	logs)
+		_autopilot_logs
+		return 0
+		;;
+	daemon)
+		_autopilot_start_daemon "$poll_interval"
+		return 0
+		;;
+	esac
 
 	local runner
 	runner=$(detect_runner)
@@ -127,6 +179,106 @@ cmd_autopilot() {
 		printf '  waiting %ss...\n\n' "$poll_interval"
 		sleep "$poll_interval"
 	done
+}
+
+_autopilot_pid_file() {
+	printf '%s/autopilot.pid' "$ORCHD_DIR"
+}
+
+_autopilot_log_file() {
+	printf '%s/autopilot.log' "$ORCHD_DIR"
+}
+
+_autopilot_is_running() {
+	local pid_file
+	pid_file=$(_autopilot_pid_file)
+	[[ -f "$pid_file" ]] || return 1
+	local pid
+	pid=$(cat "$pid_file" 2>/dev/null || true)
+	[[ -n "$pid" ]] || return 1
+	if kill -0 "$pid" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+_autopilot_status() {
+	local pid_file
+	pid_file=$(_autopilot_pid_file)
+	if _autopilot_is_running; then
+		local pid
+		pid=$(cat "$pid_file" 2>/dev/null || true)
+		printf 'autopilot daemon: running (pid %s)\n' "$pid"
+		printf 'log: %s\n' "$(_autopilot_log_file)"
+		return 0
+	fi
+	if [[ -f "$pid_file" ]]; then
+		printf 'autopilot daemon: not running (stale pid file)\n'
+	else
+		printf 'autopilot daemon: not running\n'
+	fi
+	return 1
+}
+
+_autopilot_stop() {
+	local pid_file
+	pid_file=$(_autopilot_pid_file)
+	if ! [[ -f "$pid_file" ]]; then
+		printf 'autopilot daemon: not running\n'
+		return 0
+	fi
+	local pid
+	pid=$(cat "$pid_file" 2>/dev/null || true)
+	if [[ -z "$pid" ]]; then
+		rm -f "$pid_file"
+		printf 'autopilot daemon: pid file removed\n'
+		return 0
+	fi
+	if kill -0 "$pid" >/dev/null 2>&1; then
+		kill "$pid" >/dev/null 2>&1 || true
+		printf 'autopilot daemon: stopped (pid %s)\n' "$pid"
+	else
+		printf 'autopilot daemon: not running (stale pid %s)\n' "$pid"
+	fi
+	rm -f "$pid_file"
+}
+
+_autopilot_logs() {
+	local log_file
+	log_file=$(_autopilot_log_file)
+	if [[ ! -f "$log_file" ]]; then
+		printf 'autopilot log not found: %s\n' "$log_file"
+		return 1
+	fi
+	tail -n 200 -f "$log_file"
+}
+
+_autopilot_start_daemon() {
+	local poll_interval="$1"
+	if _autopilot_is_running; then
+		_autopilot_status
+		return 0
+	fi
+
+	# Poll interval: arg > config > default 30s
+	if [[ -z "$poll_interval" ]]; then
+		poll_interval=$(config_get "autopilot_poll" "30")
+	fi
+	if ! [[ "$poll_interval" =~ ^[0-9]+$ ]]; then
+		die "poll interval must be integer seconds: $poll_interval"
+	fi
+
+	local log_file pid_file
+	log_file=$(_autopilot_log_file)
+	pid_file=$(_autopilot_pid_file)
+
+	[[ -n "${ORCHD_BIN:-}" ]] || die "ORCHD_BIN not set (internal error)"
+
+	nohup "$ORCHD_BIN" autopilot "$poll_interval" >"$log_file" 2>&1 &
+	local pid=$!
+	printf '%s\n' "$pid" >"$pid_file"
+	printf 'autopilot daemon started (pid %s)\n' "$pid"
+	printf 'log: %s\n' "$log_file"
 }
 
 # --- Phase 1: check finished agents ---

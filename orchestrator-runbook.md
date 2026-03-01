@@ -100,9 +100,17 @@ test "$TOKEN" = "SMOKE42"
 echo "OK: exec+resume works (thread_id=$THREAD_ID)"
 ```
 
-### 3.5 Optional "Always-On" Watch Loop (tmux)
+### 3.5 Optional "Always-On" Loop (recommended)
 
-If the orchestrator needs to monitor the repo in the background after responding, the most practical method is a tmux loop.
+If the orchestrator needs to continue without manual prompts, prefer the built-in daemon:
+
+```bash
+orchd autopilot --daemon 30
+```
+
+Use `orchd autopilot --status|--logs|--stop` to monitor or stop the loop.
+
+If you only need a passive repo monitor, a tmux loop is sufficient.
 
 - Monitor-only (safe): only reports `fetch/status` and branch SHA changes.
 - Example: `orchd start <repo_dir> 30` (see `~/.local/bin/orchd --help`)

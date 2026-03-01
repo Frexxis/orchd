@@ -346,6 +346,8 @@ If present, `orchd check` will use them for that task (override > global config 
 - `orchd merge --all`: integrate done tasks in dependency order.
 - `orchd resume <task-id> [reason]`: continue failed/stuck tasks.
 - `orchd autopilot`: run the built-in autonomous loop.
+- `orchd autopilot --daemon [poll]`: run autonomously in background (recommended for long runs).
+- `orchd autopilot --status|--stop|--logs`: manage the daemon.
 
 ## Suggested Loop
 
