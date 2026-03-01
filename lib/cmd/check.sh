@@ -185,13 +185,24 @@ _check_single() {
 		failed=$((failed + 1))
 	fi
 
-	# 5. Resolve quality commands (config or auto-detect)
+	# 5. Resolve quality commands (task override > config > auto-detect)
 	local lint_cmd test_cmd build_cmd
 	local auto_detect_used=false
+	local task_lint_cmd task_test_cmd task_build_cmd
 
-	lint_cmd=$(config_get "lint_cmd" "")
-	test_cmd=$(config_get "test_cmd" "")
-	build_cmd=$(config_get "build_cmd" "")
+	task_lint_cmd=$(task_get "$task_id" "lint_cmd" "")
+	task_test_cmd=$(task_get "$task_id" "test_cmd" "")
+	task_build_cmd=$(task_get "$task_id" "build_cmd" "")
+
+	# Task overrides win if set.
+	lint_cmd="$task_lint_cmd"
+	test_cmd="$task_test_cmd"
+	build_cmd="$task_build_cmd"
+
+	# Fill missing from global config.
+	if [[ -z "$lint_cmd" ]]; then lint_cmd=$(config_get "lint_cmd" ""); fi
+	if [[ -z "$test_cmd" ]]; then test_cmd=$(config_get "test_cmd" ""); fi
+	if [[ -z "$build_cmd" ]]; then build_cmd=$(config_get "build_cmd" ""); fi
 
 	if [[ -z "$lint_cmd" || -z "$test_cmd" || -z "$build_cmd" ]]; then
 		auto_detect_used=true
@@ -206,6 +217,10 @@ _check_single() {
 		if [[ -z "$build_cmd" ]]; then
 			build_cmd="$ORCHD_DETECTED_BUILD_CMD"
 		fi
+	fi
+
+	if [[ -n "$task_lint_cmd" || -n "$task_test_cmd" || -n "$task_build_cmd" ]]; then
+		_check_printf '  [INFO] task-specific quality commands enabled\n'
 	fi
 
 	if $auto_detect_used; then

@@ -276,6 +276,24 @@ else
 	fail "orchestrator-runbook.md not created"
 fi
 
+printf '\n[6b] Plan import parses quality overrides\n'
+run_in_dir "$INIT_DIR" bash -c 'cat > .orchd/plan_in.txt <<"EOF"
+TASK: t1
+TITLE: Test overrides
+ROLE: domain
+DEPS: none
+DESCRIPTION: do a thing
+ACCEPTANCE: done
+TEST_CMD: echo test
+LINT_CMD: echo lint
+BUILD_CMD: none
+EOF'
+assert_exit_0 "plan --file succeeds" run_in_dir "$INIT_DIR" "$ORCHD" plan --file .orchd/plan_in.txt
+assert_output_contains "task test_cmd stored" "echo test" cat "$INIT_DIR/.orchd/tasks/t1/test_cmd"
+assert_output_contains "task lint_cmd stored" "echo lint" cat "$INIT_DIR/.orchd/tasks/t1/lint_cmd"
+# Cleanup so later autopilot tests see only the tasks they create.
+rm -rf "$INIT_DIR/.orchd/tasks/t1" "$INIT_DIR/.orchd/plan_in.txt"
+
 printf '\n[7] Orchestration commands (no-project validation)\n'
 # These should fail gracefully when not in an orchd project
 assert_exit_nonzero "plan without project fails" "$ORCHD" plan "test"

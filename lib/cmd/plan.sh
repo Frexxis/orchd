@@ -26,6 +26,7 @@ usage:
 notes:
   - --runner overrides the configured/auto-detected runner for planning only
   - plan output must follow the TASK/TITLE/ROLE/DEPS/DESCRIPTION/ACCEPTANCE format
+  - optional per-task overrides: LINT_CMD, TEST_CMD, BUILD_CMD
 EOF
 		return 0
 	fi
@@ -238,6 +239,9 @@ _parse_plan_output() {
 		DEPS:*) keyword="DEPS" ;;
 		DESCRIPTION:*) keyword="DESCRIPTION" ;;
 		ACCEPTANCE:*) keyword="ACCEPTANCE" ;;
+		LINT_CMD:*) keyword="LINT_CMD" ;;
+		TEST_CMD:*) keyword="TEST_CMD" ;;
+		BUILD_CMD:*) keyword="BUILD_CMD" ;;
 		esac
 
 		if [[ -n "$keyword" ]]; then
@@ -279,6 +283,24 @@ _parse_plan_output() {
 			ACCEPTANCE)
 				current_field="acceptance"
 				current_value="$val"
+				;;
+			LINT_CMD)
+				if [[ "$val" == "none" ]] || [[ "$val" == "auto" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "lint_cmd" "$val"
+				;;
+			TEST_CMD)
+				if [[ "$val" == "none" ]] || [[ "$val" == "auto" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "test_cmd" "$val"
+				;;
+			BUILD_CMD)
+				if [[ "$val" == "none" ]] || [[ "$val" == "auto" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "build_cmd" "$val"
 				;;
 			esac
 		else

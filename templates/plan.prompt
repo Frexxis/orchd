@@ -24,6 +24,13 @@ Analyze the project and produce a structured task list. Each task must have:
 - A concise description of what the agent should implement
 - Acceptance criteria (specific, testable conditions)
 
+Optional per-task quality commands (use when the project is multi-stack or task-specific):
+- LINT_CMD: shell command to lint this task's area
+- TEST_CMD: shell command to test this task's area
+- BUILD_CMD: shell command to build this task's area
+
+If you include these, keep them short and runnable from the repo root.
+
 Output ONLY in this exact format, one task per block, separated by blank lines:
 
 TASK: <id>
@@ -32,6 +39,11 @@ ROLE: <role>
 DEPS: <comma-separated dependency IDs or "none">
 DESCRIPTION: <what to implement>
 ACCEPTANCE: <testable acceptance criteria>
+
+[optional]
+LINT_CMD: <lint command or "none">
+TEST_CMD: <test command or "none">
+BUILD_CMD: <build command or "none">
 
 Rules:
 - Order tasks so that independent ones come first

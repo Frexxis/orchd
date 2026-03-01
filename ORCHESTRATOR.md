@@ -30,6 +30,11 @@ Use these to understand current state, remaining work, constraints, and acceptan
 - `orchd state --json`: machine-friendly snapshot for decision making.
 - `orchd plan "<description>"`: AI-generated task DAG.
 - `orchd plan --file <path>` / `orchd plan --stdin`: import externally-produced task DAG.
+
+## Task-Specific Quality Commands (Optional)
+
+Task blocks can optionally include `LINT_CMD`, `TEST_CMD`, and `BUILD_CMD`.
+If present, `orchd check` will use them for that task (override > global config > auto-detect).
 - `orchd spawn --all [--runner <runner>]`: start ready tasks.
 - `orchd check --all`: evaluate completed/finished tasks.
 - `orchd merge --all`: integrate done tasks in dependency order.
