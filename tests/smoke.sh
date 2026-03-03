@@ -295,6 +295,41 @@ assert_output_contains "task lint_cmd stored" "echo lint" cat "$INIT_DIR/.orchd/
 # Cleanup so later autopilot tests see only the tasks they create.
 rm -rf "$INIT_DIR/.orchd/tasks/t1" "$INIT_DIR/.orchd/plan_in.txt"
 
+printf '\n[6c] JSONL text extraction is tolerant\n'
+ORCHD_LIB_DIR="$(dirname "$ORCHD")/../lib"
+EXTRACT_OUT=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/plan.sh
+	source "$ORCHD_LIB_DIR/cmd/plan.sh"
+	cat <<'EOF' | _extract_text_from_jsonl
+{"type":"item.completed","item":{"type":"assistant_message","text":"TASK: t1\nTITLE: X"}}
+EOF
+)
+if printf '%s' "$EXTRACT_OUT" | grep -q 'TASK: t1'; then
+	pass "extractor reads item.completed text"
+else
+	fail "extractor reads item.completed text"
+fi
+
+EXTRACT_OUT2=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/plan.sh
+	source "$ORCHD_LIB_DIR/cmd/plan.sh"
+	cat <<'EOF' | _extract_text_from_jsonl
+{"type":"response.output_text.delta","delta":"TASK: t2\\n"}
+{"type":"response.output_text.delta","delta":"TITLE: Y\\n"}
+EOF
+)
+if printf '%s' "$EXTRACT_OUT2" | grep -q 'TASK: t2'; then
+	pass "extractor falls back to delta stream"
+else
+	fail "extractor falls back to delta stream"
+fi
+
 printf '\n[7] Orchestration commands (no-project validation)\n'
 # These should fail gracefully when not in an orchd project
 assert_exit_nonzero "plan without project fails" "$ORCHD" plan "test"
@@ -310,6 +345,26 @@ assert_exit_0 "board in init dir" run_in_dir "$INIT_DIR" "$ORCHD" board
 printf '\n[9] Utility commands (in initialized project)\n'
 assert_exit_0 "doctor in init dir" run_in_dir "$INIT_DIR" "$ORCHD" doctor
 assert_exit_0 "refresh-docs in init dir" run_in_dir "$INIT_DIR" "$ORCHD" refresh-docs
+
+printf '\n[9b] Python auto-detect prefers venv bins\n'
+mkdir -p "$INIT_DIR/.venv/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$INIT_DIR/.venv/bin/python"
+chmod +x "$INIT_DIR/.venv/bin/python"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$INIT_DIR/.venv/bin/ruff"
+chmod +x "$INIT_DIR/.venv/bin/ruff"
+printf '[build-system]\nrequires = []\n' >"$INIT_DIR/pyproject.toml"
+DETECT_OUT=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	quality_detect_cmds "$INIT_DIR"
+	printf '%s\n' "$ORCHD_DETECTED_LINT_CMD"
+)
+if printf '%s' "$DETECT_OUT" | grep -q '^\.venv/bin/ruff'; then
+	pass "python lint auto-detect uses .venv/bin/ruff"
+else
+	fail "python lint auto-detect uses .venv/bin/ruff"
+fi
 
 printf '\n[10] Help includes orchestration commands\n'
 assert_output_contains "help shows init" "init" "$ORCHD" --help
@@ -470,6 +525,12 @@ printf 'Memory lesson test task\n' >"$INIT_DIR/.orchd/tasks/memory-lesson-test/t
 printf 'Test memory lesson writing\n' >"$INIT_DIR/.orchd/tasks/memory-lesson-test/description"
 
 assert_exit_0 "merge writes memory lesson" run_in_dir "$INIT_DIR" "$ORCHD" merge "memory-lesson-test"
+
+if git -C "$INIT_DIR" log -n 20 --oneline | grep -q 'docs(memory): update after merging'; then
+	fail "merge does not create separate docs(memory) commit"
+else
+	pass "merge does not create separate docs(memory) commit"
+fi
 
 if [[ -f "$INIT_DIR/docs/memory/lessons/memory-lesson-test.md" ]]; then
 	pass "lesson file created after merge"

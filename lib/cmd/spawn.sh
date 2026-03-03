@@ -94,6 +94,7 @@ _spawn_single() {
 	# These files are created by `orchd init` in the project root, but may be untracked;
 	# worktrees only include tracked files. Create them here if missing so the worker can read them.
 	ensure_agent_docs "$worktree_path"
+	worktree_link_python_venv "$worktree_path" || true
 
 	# Build kickoff prompt
 	local prompt

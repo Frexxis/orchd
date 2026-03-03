@@ -54,6 +54,8 @@ source "$ORCHD_LIB_DIR/cmd/resume.sh"
 source "$ORCHD_LIB_DIR/cmd/autopilot.sh"
 # shellcheck source=../lib/cmd/state.sh
 source "$ORCHD_LIB_DIR/cmd/state.sh"
+# shellcheck source=../lib/cmd/reconcile.sh
+source "$ORCHD_LIB_DIR/cmd/reconcile.sh"
 # shellcheck source=../lib/cmd/await.sh
 source "$ORCHD_LIB_DIR/cmd/await.sh"
 # shellcheck source=../lib/cmd/memory.sh
@@ -79,6 +81,7 @@ Orchestration commands:
   orchd tui    [--project <dir>]       Rich terminal UI dashboard (Go binary)
   orchd state  [--json]                Print task state snapshot
   orchd await  [--all|<task-id>]       Block until a task changes or agent exits
+  orchd reconcile [--dry-run]          Reconcile orchd state with git reality
   orchd check  <task-id> | --all       Run quality gates on tasks
   orchd merge  <task-id> | --all       Merge completed tasks (DAG order)
   orchd resume <task-id> [reason...]    Resume/continue a task in its worktree
@@ -288,6 +291,9 @@ case "$cmd" in
     ;;
   await)
     cmd_await "$@"
+    ;;
+  reconcile|reconcile-state|repair)
+    cmd_reconcile "$@"
     ;;
   check)
     cmd_check "$@"

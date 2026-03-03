@@ -143,6 +143,24 @@ config_get_int() {
 	fi
 }
 
+is_truthy() {
+	local v=${1:-}
+	local vl
+	vl=$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')
+	case "$vl" in
+	"" | 1 | true | yes | on)
+		return 0
+		;;
+	0 | false | no | off)
+		return 1
+		;;
+	*)
+		# Default to true for unknown values to keep behavior permissive.
+		return 0
+		;;
+	esac
+}
+
 # --- Task state management ---
 
 task_dir() {
@@ -778,11 +796,29 @@ quality_detect_cmds() {
 	if [[ -f "$repo_dir/pyproject.toml" ]] || [[ -f "$repo_dir/requirements.txt" ]] || [[ -f "$repo_dir/poetry.lock" ]]; then
 		stack_count=$((stack_count + 1))
 		local lint="" test="" build="" notes="" score=0
-		if command -v ruff >/dev/null 2>&1; then
+		local venv_dir venv_bin
+		venv_dir=$(config_get "python.venv_dir" ".venv")
+		venv_bin="$repo_dir/$venv_dir/bin"
+		if [[ -x "$venv_bin/ruff" ]]; then
+			lint="$venv_dir/bin/ruff check ."
+			score=$((score + 1))
+			notes="python: using venv ruff ($venv_dir)"
+		elif command -v ruff >/dev/null 2>&1; then
 			lint="ruff check ."
 			score=$((score + 1))
 		fi
-		if command -v pytest >/dev/null 2>&1; then
+		if [[ -x "$venv_bin/python" ]]; then
+			if [[ -x "$venv_bin/pytest" ]]; then
+				test="$venv_dir/bin/pytest"
+			else
+				test="$venv_dir/bin/python -m pytest"
+			fi
+			score=$((score + 1))
+			if [[ -n "$notes" ]]; then
+				notes+=$'\n'
+			fi
+			notes+="python: using venv python ($venv_dir)"
+		elif command -v pytest >/dev/null 2>&1; then
 			test="pytest"
 			score=$((score + 1))
 		fi
@@ -895,6 +931,28 @@ quality_detect_cmds() {
 	if ((best_score == 0)) && [[ -n "$best_stack" ]]; then
 		quality_detect_note "no lint/test/build commands detected for $best_stack"
 	fi
+}
+
+worktree_link_python_venv() {
+	local worktree=$1
+	local venv_dir
+	venv_dir=$(config_get "python.venv_dir" ".venv")
+	local enabled
+	enabled=$(config_get "python.link_venv" "true")
+	if ! is_truthy "$enabled"; then
+		return 0
+	fi
+	[[ -n "$PROJECT_ROOT" ]] || return 0
+	local src="$PROJECT_ROOT/$venv_dir"
+	local dest="$worktree/$venv_dir"
+	if [[ ! -d "$src" ]]; then
+		return 0
+	fi
+	if [[ -e "$dest" ]]; then
+		return 0
+	fi
+	ln -s "$src" "$dest" 2>/dev/null || return 0
+	log_event "INFO" "worktree: linked venv ($venv_dir) into $(basename "$worktree")"
 }
 
 # --- Worktree management ---
@@ -1205,6 +1263,73 @@ memory_update_progress() {
 		[[ -z "$task_id" ]] && continue
 		total=$((total + 1))
 		status=$(task_status "$task_id")
+		local title
+		title=$(task_get "$task_id" "title" "$task_id")
+		case "$status" in
+		merged)
+			merged=$((merged + 1))
+			merged_list+="- [x] ${task_id}: ${title}"$'\n'
+			;;
+		failed)
+			failed=$((failed + 1))
+			failed_list+="- [!] ${task_id}: ${title}"$'\n'
+			;;
+		pending)
+			pending=$((pending + 1))
+			pending_list+="- [ ] ${task_id}: ${title}"$'\n'
+			;;
+		running) running=$((running + 1)) ;;
+		needs_input) needs_input=$((needs_input + 1)) ;;
+		esac
+	done <<<"$(task_list_ids)"
+
+	cat >"$mem_dir/progress.md" <<EOF
+# Progress
+
+*Last updated: ${ts}*
+
+## Summary
+- Total tasks: ${total}
+- Merged: ${merged}
+- Pending: ${pending}
+- Running: ${running}
+- Failed: ${failed}
+- Needs input: ${needs_input}
+
+## Completed (merged)
+${merged_list:-  (none yet)}
+
+## Remaining
+${pending_list:-  (none)}
+
+## Issues
+${failed_list:-  (none)}
+EOF
+}
+
+# Like memory_update_progress, but treats one task as if it has a different status.
+# This is used to generate accurate progress snapshots during merge before the task
+# status file is updated.
+memory_update_progress_override() {
+	local override_task_id=$1
+	local override_status=$2
+
+	local mem_dir
+	mem_dir=$(memory_dir)
+
+	local ts
+	ts=$(now_iso)
+
+	local total=0 merged=0 failed=0 pending=0 running=0 needs_input=0
+	local merged_list="" pending_list="" failed_list=""
+	local task_id status
+	while IFS= read -r task_id; do
+		[[ -z "$task_id" ]] && continue
+		total=$((total + 1))
+		status=$(task_status "$task_id")
+		if [[ -n "$override_task_id" ]] && [[ "$task_id" == "$override_task_id" ]]; then
+			status="$override_status"
+		fi
 		local title
 		title=$(task_get "$task_id" "title" "$task_id")
 		case "$status" in

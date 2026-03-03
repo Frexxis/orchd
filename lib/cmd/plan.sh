@@ -219,12 +219,98 @@ EOF
 
 # --- Extract text content from JSONL (codex output) ---
 _extract_text_from_jsonl() {
+	local raw tmp
+	raw=$(mktemp)
+	tmp=$(mktemp)
+	cat >"$raw"
+
 	if command -v jq >/dev/null 2>&1; then
-		jq -r 'select(.type=="item.completed" and (.item.type=="agent_message" or .item.type=="assistant_message")) | .item.text // empty' 2>/dev/null
-	else
-		# Fallback: portable sed (no grep -oP, which is unavailable on macOS)
-		sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null || cat
+		# Primary: known codex JSONL schema (item.completed -> item.text)
+		jq -r '
+			select(.type=="item.completed")
+			| .item
+			| (
+				.text? //
+				(.content? // empty | if type=="array" then .[] | .text? // empty else empty end)
+			)
+			| select(type=="string" and length>0)
+		' 2>/dev/null <"$raw" >"$tmp" || true
 	fi
+
+	# If jq didn't yield anything useful, fall back to a tolerant parser.
+	if [[ -s "$tmp" ]] && grep -q '[^[:space:]]' "$tmp" 2>/dev/null; then
+		cat "$tmp"
+		rm -f "$raw" "$tmp"
+		return 0
+	fi
+	rm -f "$tmp"
+
+	if command -v python3 >/dev/null 2>&1; then
+		python3 - "$raw" <<'PY'
+import json
+import sys
+
+complete = []
+deltas = []
+
+def add_complete(s):
+    if isinstance(s, str) and s.strip():
+        complete.append(s)
+
+def add_delta(s):
+    if isinstance(s, str) and s:
+        deltas.append(s)
+
+raw_path = sys.argv[1]
+with open(raw_path, "r", encoding="utf-8", errors="ignore") as f:
+    for line in f:
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+
+        if not isinstance(obj, dict):
+            continue
+
+        t = obj.get("type", "")
+
+        # Common: {"type":"item.completed","item":{"text":...}}
+        item = obj.get("item")
+        if isinstance(item, dict):
+            add_complete(item.get("text"))
+            content = item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        add_complete(part.get("text"))
+
+        # Some tools emit top-level text
+        add_complete(obj.get("text"))
+
+        # Streaming-style events (best-effort)
+        if isinstance(t, str) and t.endswith(".delta"):
+            add_delta(obj.get("delta"))
+        if isinstance(t, str) and t.endswith(".done"):
+            add_complete(obj.get("output_text"))
+            add_complete(obj.get("delta"))
+
+out = "\n".join(s for s in complete if isinstance(s, str) and s.strip())
+if not out:
+    out = "".join(deltas).strip()
+
+if out:
+    sys.stdout.write(out)
+PY
+		rm -f "$raw"
+		return 0
+	fi
+
+	# Last resort: portable sed extract (may be noisy)
+	sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null <"$raw" || cat "$raw"
+	rm -f "$raw"
 }
 
 # --- Parse TASK blocks from plan output ---

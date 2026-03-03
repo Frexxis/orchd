@@ -51,6 +51,7 @@ _resume_single() {
 
 	# Ensure agent policy docs exist in the worktree for the resumed agent.
 	ensure_agent_docs "$worktree"
+	worktree_link_python_venv "$worktree" || true
 
 	local runner
 	runner=$(task_get "$task_id" "runner" "")
@@ -102,7 +103,7 @@ _rotate_task_logs() {
 	local task_id=$1
 	local attempt=$2
 	local f
-	for f in "$LOGS_DIR/${task_id}.log" "$LOGS_DIR/${task_id}.jsonl"; do
+	for f in "$LOGS_DIR/${task_id}.log" "$LOGS_DIR/${task_id}.jsonl" "$LOGS_DIR/${task_id}.exit"; do
 		[[ -f "$f" ]] || continue
 		local ext
 		ext=${f##*.}

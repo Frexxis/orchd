@@ -55,6 +55,107 @@ _check_single() {
 		return "$ORCHD_QUALITY_RC"
 	}
 
+	_validate_test_cmd_paths() {
+		local cmd=$1
+		if ! command -v python3 >/dev/null 2>&1; then
+			return 0
+		fi
+		local out rc
+		out=$(
+			python3 - "$worktree" "$cmd" <<'PY'
+import difflib
+import os
+import shlex
+import sys
+
+root = sys.argv[1]
+cmd = sys.argv[2]
+
+try:
+    args = shlex.split(cmd)
+except Exception:
+    sys.exit(0)
+
+def is_pytest_invocation(a):
+    if not a:
+        return (False, 0)
+    exe = os.path.basename(a[0])
+    if exe == "pytest" or a[0].endswith("/pytest"):
+        return (True, 1)
+    if exe in ("python", "python3") or a[0].endswith("/python") or a[0].endswith("/python3"):
+        if len(a) >= 3 and a[1] == "-m" and a[2] == "pytest":
+            return (True, 3)
+    return (False, 0)
+
+is_pytest, start = is_pytest_invocation(args)
+if not is_pytest:
+    sys.exit(0)
+
+missing = []
+candidates = []
+for a in args[start:]:
+    if a.startswith("-"):
+        continue
+    # Path-like args only.
+    if "::" in a:
+        a = a.split("::", 1)[0]
+    if any(ch in a for ch in ("*", "?", "[", "]", "{", "}")):
+        continue
+    if a.endswith(".py") or "/" in a or a.startswith("tests") or a.startswith("./"):
+        candidates.append(a)
+
+for p in candidates:
+    abs_p = os.path.normpath(os.path.join(root, p))
+    if not (os.path.isfile(abs_p) or os.path.isdir(abs_p)):
+        missing.append(p)
+
+if not missing:
+    sys.exit(0)
+
+print("pytest: test_cmd references missing path(s):")
+for p in missing:
+    print(f"  - {p}")
+
+# Suggest close matches among test files.
+all_tests = []
+for dirpath, dirnames, filenames in os.walk(root):
+    rel_dir = os.path.relpath(dirpath, root)
+    # Skip heavy/irrelevant dirs.
+    dirnames[:] = [d for d in dirnames if d not in (".git", ".orchd", ".worktrees", "node_modules", ".venv")]
+    for fn in filenames:
+        if fn.startswith("test") and fn.endswith(".py"):
+            rp = os.path.normpath(os.path.join(rel_dir, fn))
+            if rp == ".":
+                rp = fn
+            all_tests.append(rp)
+
+if all_tests:
+    print("pytest: did you mean:")
+    for p in missing:
+        base = os.path.basename(p)
+        matches = difflib.get_close_matches(base, [os.path.basename(x) for x in all_tests], n=3, cutoff=0.6)
+        if matches:
+            for m in matches:
+                # Show the first path that ends with the matched basename.
+                for full in all_tests:
+                    if os.path.basename(full) == m:
+                        print(f"  - {full}")
+                        break
+PY
+		)
+		rc=$?
+		if ((rc != 0)); then
+			# If the validator itself errored, don't block tests.
+			return 0
+		fi
+		if [[ -n "$out" ]]; then
+			_check_printf '  [FAIL] invalid pytest path(s) in test_cmd\n'
+			_check_printf '%s\n' "$out"
+			return 1
+		fi
+		return 0
+	}
+
 	_check_printf '=== quality gate: %s ===\n\n' "$task_id"
 
 	local passed=0
@@ -265,7 +366,9 @@ _check_single() {
 	if [[ -n "$test_cmd" ]]; then
 		total=$((total + 1))
 		_check_printf '  [RUN]  test: %s\n' "$test_cmd"
-		if _quality_exec "test" "$test_cmd"; then
+		if ! _validate_test_cmd_paths "$test_cmd"; then
+			failed=$((failed + 1))
+		elif _quality_exec "test" "$test_cmd"; then
 			_check_printf '  [PASS] tests passed\n'
 			passed=$((passed + 1))
 		else
