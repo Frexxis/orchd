@@ -209,6 +209,12 @@ EOF
 					_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
 					return 0
 					;;
+				3)
+					# Fatal: no AI runner configured/available
+					printf '  [FATAL] continuous mode requires an AI runner (codex/claude/opencode/aider)\n' >&2
+					log_event "ERROR" "autopilot: continuous mode requires AI runner"
+					return 1
+					;;
 				esac
 			fi
 			_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
@@ -269,6 +275,12 @@ EOF
 					log_event "INFO" "autopilot: ideate signaled PROJECT_COMPLETE"
 					_autopilot_summary "$merged2" "$failed2" "$conflict2" "$needs2"
 					return 0
+					;;
+				3)
+					# Fatal: no AI runner configured/available
+					printf '  [FATAL] continuous mode requires an AI runner (codex/claude/opencode/aider)\n' >&2
+					log_event "ERROR" "autopilot: continuous mode requires AI runner"
+					return 1
 					;;
 				esac
 			fi
@@ -413,7 +425,8 @@ _autopilot_ideate() {
 	fi
 
 	if [[ "$runner" == "none" ]]; then
-		return 1
+		# Return 3 for fatal "no runner" to distinguish from transient failures
+		return 3
 	fi
 
 	if ((max_cycles > 0)) && ((cycles >= max_cycles)); then
@@ -668,11 +681,14 @@ _autopilot_drain_queue() {
 	local runner=$1
 	local poll_interval=${2:-30}
 
-	local task_count=0
-	local tid
+	local active_task_count=0
+	local tid status
 	while IFS= read -r tid; do
 		[[ -z "$tid" ]] && continue
-		task_count=$((task_count + 1))
+		status=$(task_status "$tid")
+		case "$status" in
+		pending | running) active_task_count=$((active_task_count + 1)) ;;
+		esac
 	done <<<"$(task_list_ids)"
 
 	local in_progress
@@ -692,15 +708,15 @@ _autopilot_drain_queue() {
 
 	local idea=""
 
-	# If tasks exist, we are at the end of a cycle; mark the current in-progress idea
+	# If active tasks exist, we are at the end of a cycle; mark the current in-progress idea
 	# complete before moving on.
-	if ((task_count > 0)); then
+	if ((active_task_count > 0)); then
 		queue_complete_current
 	fi
 
-	# If there is an in-progress idea and no tasks exist, we likely failed while planning.
+	# If there is an in-progress idea and no active tasks exist, we likely failed while planning.
 	# Retry planning the same idea without mutating queue state.
-	if ((task_count == 0)) && ((in_progress > 0)); then
+	if ((active_task_count == 0)) && ((in_progress > 0)); then
 		idea=$(queue_current_in_progress 2>/dev/null || true)
 		[[ -n "$idea" ]] || return 1
 	else

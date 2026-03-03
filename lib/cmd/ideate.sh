@@ -251,9 +251,12 @@ _ideate_parse_output() {
 	local project_complete=false
 	local complete_reason=""
 
-	while IFS= read -r line; do
+	while IFS= read -r line || [[ -n "$line" ]]; do
 		# Strip leading/trailing whitespace
 		line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+		# Skip empty lines after stripping
+		[[ -z "$line" ]] && continue
 
 		# Check for PROJECT_COMPLETE
 		if [[ "$line" == "PROJECT_COMPLETE" ]]; then

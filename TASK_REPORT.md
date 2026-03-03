@@ -13,6 +13,10 @@
   - Added smoke coverage for `ideate` parsing and `autopilot --continuous` help.
 - Autopilot continuous-mode robustness:
   - Ideation failures no longer terminate autopilot/daemon immediately; it waits and retries until success, `PROJECT_COMPLETE`, or the configured failure cap.
+- Critical fixes from PR review (P1/P2 issues):
+  - **Fixed**: `task_count > 0` check was incorrectly counting all tasks (including merged), causing in-progress ideas to be marked complete prematurely. Now only counts active (pending/running) tasks.
+  - **Fixed**: `runner == "none"` in continuous mode now returns error code 3 (fatal) instead of 1, preventing infinite retry loops when no AI runner is configured.
+  - **Fixed**: `_ideate_parse_output` now handles the last line even when output lacks a trailing newline (using `|| [[ -n "$line" ]]` pattern).
 
 ## Files Modified/Created
 
@@ -32,7 +36,7 @@
 ## Tests Run
 
 - `shellcheck --exclude=SC1091 bin/orchd lib/*.sh lib/cmd/*.sh tests/smoke.sh`
-- `bash tests/smoke.sh` -> `=== Results: 113 passed, 0 failed, 113 total ===`
+- `bash tests/smoke.sh` -> `=== Results: 114 passed, 0 failed, 114 total ===`
 
 EVIDENCE:
 - CMD: `shellcheck --exclude=SC1091 bin/orchd lib/*.sh lib/cmd/*.sh tests/smoke.sh`
@@ -40,7 +44,7 @@ EVIDENCE:
   OUTPUT: No findings.
 - CMD: `bash tests/smoke.sh`
   RESULT: PASS
-  OUTPUT: `=== Results: 113 passed, 0 failed, 113 total ===`
+  OUTPUT: `=== Results: 114 passed, 0 failed, 114 total ===`
 
 ## Risks/Notes
 
