@@ -1,3 +1,7 @@
-.orchd/
-.worktrees/
+/.orchd/
+/.worktrees/
 *.bak
+/bin/orchd-tui
+/dist/
+/orchd-tui
+/orchd-tui.exe

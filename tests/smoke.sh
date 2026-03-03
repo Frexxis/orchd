@@ -317,6 +317,7 @@ assert_output_contains "help shows plan" "plan" "$ORCHD" --help
 assert_output_contains "help shows review" "review" "$ORCHD" --help
 assert_output_contains "help shows spawn" "spawn" "$ORCHD" --help
 assert_output_contains "help shows board" "board" "$ORCHD" --help
+assert_output_contains "help shows tui" "tui" "$ORCHD" --help
 assert_output_contains "help shows state" "state" "$ORCHD" --help
 assert_output_contains "help shows await" "await" "$ORCHD" --help
 assert_output_contains "help shows check" "check" "$ORCHD" --help

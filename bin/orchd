@@ -76,6 +76,7 @@ Orchestration commands:
   orchd review [ref]                   Run review-only agent on changes
   orchd spawn  <task-id> | --all       Create worktrees & launch agents
   orchd board  [--watch]               Live agent status dashboard
+  orchd tui    [--project <dir>]       Rich terminal UI dashboard (Go binary)
   orchd state  [--json]                Print task state snapshot
   orchd await  [--all|<task-id>]       Block until a task changes or agent exits
   orchd check  <task-id> | --all       Run quality gates on tasks
@@ -245,6 +246,42 @@ case "$cmd" in
     ;;
   board)
     cmd_board "$@"
+    ;;
+  tui)
+    local_tui_bin="$(dirname "$SELF")/orchd-tui"
+    repo_root="$(dirname "$SELF")/.."
+
+    if [[ -d "$repo_root/cmd/orchd-tui" ]] && command -v go >/dev/null 2>&1; then
+      need_build=0
+      if [[ ! -x "$local_tui_bin" ]]; then
+        need_build=1
+      else
+        for src_file in "$repo_root"/cmd/orchd-tui/*.go "$repo_root"/go.mod "$repo_root"/go.sum; do
+          [[ -e "$src_file" ]] || continue
+          if [[ "$src_file" -nt "$local_tui_bin" ]]; then
+            need_build=1
+            break
+          fi
+        done
+      fi
+
+      if [[ "$need_build" -eq 1 ]]; then
+        if ! (cd "$repo_root" && go build -o "$local_tui_bin" ./cmd/orchd-tui >/dev/null 2>&1); then
+          printf '%s\n' "orchd: failed to build local orchd-tui binary" >&2
+        fi
+      fi
+    fi
+
+    if [[ -x "$local_tui_bin" ]]; then
+      "$local_tui_bin" "$@"
+    elif command -v orchd-tui >/dev/null 2>&1; then
+      orchd-tui "$@"
+    else
+      printf '%s\n' "orchd: orchd-tui binary not found"
+      printf '%s\n' "build it with: go build -o bin/orchd-tui ./cmd/orchd-tui"
+      printf '%s\n' "falling back to: orchd board"
+      cmd_board
+    fi
     ;;
   state)
     cmd_state "$@"

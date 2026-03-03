@@ -30,6 +30,12 @@ Or step-by-step:
 orchd plan → orchd spawn --all → orchd board --watch → orchd check --all → orchd merge --all
 ```
 
+Or use the rich terminal UI:
+
+```bash
+orchd tui
+```
+
 ## Quick Start
 
 ```bash
@@ -91,6 +97,7 @@ orchd merge --all
 | `orchd spawn <task\|--all> [-r\|--runner <runner>]` | Create git worktrees and launch AI agents |
 | `orchd resume <task> [reason...]` | Resume/continue a task in its existing worktree |
 | `orchd board [--watch]` | Live terminal dashboard showing all agent status |
+| `orchd tui [--project <dir>]` | Rich interactive terminal UI (multi-panel + live logs) |
 | `orchd state [--json]` | Print a snapshot of task state (machine-friendly) |
 | `orchd await [--all\|<task>]` | Block until a task changes or an agent exits |
 | `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
@@ -166,6 +173,48 @@ orchd auto-detects your installed AI CLI tool, or you can set it in `.orchd.toml
 | OpenCode | `opencode` | Supported |
 | Aider | `aider` | Supported |
 | Custom | any | Supported (via template) |
+
+## Terminal UI
+
+`orchd tui` launches a full-screen TUI built with Bubbletea for interactive orchestration.
+
+Features:
+
+- Large ASCII `orchd` banner + tabbed layout (`Tasks`, `Logs`, `DAG`, `Memory`, `Queue`, `Stats`)
+- Live task list with status and dependency-aware details
+- Built-in actions: spawn, check, merge, resume
+- Live log tail for selected task log + global `.orchd/orchd.log`
+- Fast state refresh via filesystem watch + periodic polling fallback
+- Mouse wheel/click support for navigation and selection
+- Color-coded status chips and card-style panels for easier scanning
+- Memory bank, idea queue, DAG, and project statistics views
+
+Shortcuts:
+
+- `1-6`: switch tabs
+- `tab`: switch pane
+- `j/k` or `up/down`: navigate
+- `s/c/m/x`: spawn/check/merge/resume selected task
+- `S/C/M`: run `--all` variants
+- `a`: attach to selected task's tmux session
+- `/`: set/clear log filter (Logs tab)
+- `f`: toggle live log follow mode
+- `g` / `G`: jump to top / bottom in active pane
+- `n`: add a new queued idea (Queue tab)
+- `d`: cancel selected queued idea (Queue tab)
+- `e`: open selected memory file in `$VISUAL`/`$EDITOR` (Memory tab)
+- `r`: refresh now
+- `?`: help
+- `q`: quit
+
+Install/build (from this repo):
+
+```bash
+make build-tui
+./bin/orchd-tui
+```
+
+When you run `./bin/orchd tui` from a source checkout, orchd now auto-rebuilds the local `bin/orchd-tui` if Go sources are newer than the binary.
 
 ## Configuration
 
