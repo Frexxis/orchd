@@ -74,6 +74,12 @@ lint_cmd = ""
 test_cmd = ""
 build_cmd = ""
 
+[ideate]
+max_ideas = 5
+cooldown_seconds = 30
+max_cycles = 20
+max_consecutive_failures = 3
+
 	# [runners.codex]
 	# codex_bin = "codex"
 	# codex_flags = "--dangerously-bypass-approvals-and-sandbox"

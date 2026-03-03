@@ -64,7 +64,7 @@ assert_output_contains() {
 	shift
 	local output
 	output=$("$@" 2>&1) || true
-	if printf '%s' "$output" | grep -q "$pattern"; then
+	if printf '%s' "$output" | grep -q -- "$pattern"; then
 		pass "$desc"
 	else
 		fail "$desc (pattern '$pattern' not found in output)"
@@ -527,6 +527,39 @@ else
 	fail "queue drain keeps ideas when runner unavailable (got: $QUEUE_COUNT_AFTER_NONE)"
 fi
 
+# Verify plan failure does not mark in-progress idea complete (isolated state dir).
+QUEUE_STATUS_AFTER_PLAN_FAIL=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/autopilot.sh
+	source "$ORCHD_LIB_DIR/cmd/autopilot.sh"
+	# These variables are used by sourced helpers.
+	# shellcheck disable=SC2034
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd_failtest"
+	# shellcheck disable=SC2034
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	# shellcheck disable=SC2034
+	LOGS_DIR="$ORCHD_DIR/logs"
+	mkdir -p "$TASKS_DIR" "$LOGS_DIR"
+
+	queue_push "first idea" >/dev/null 2>&1
+	queue_push "second idea" >/dev/null 2>&1
+
+	# shellcheck disable=SC2329
+	cmd_plan() { return 1; }
+	_autopilot_drain_queue "opencode" 0 >/dev/null 2>&1 || true
+	cat "$ORCHD_DIR/queue.md"
+)
+rm -rf "$INIT_DIR/.orchd_failtest" >/dev/null 2>&1 || true
+
+if printf '%s' "$QUEUE_STATUS_AFTER_PLAN_FAIL" | grep -q -- "- \[>\]" && ! printf '%s' "$QUEUE_STATUS_AFTER_PLAN_FAIL" | grep -q -- "- \[x\]"; then
+	pass "plan failure leaves idea in-progress"
+else
+	fail "plan failure leaves idea in-progress"
+fi
+
 # Test queue_pop via internal helper (source core.sh to get helpers)
 QUEUE_POP_OUTPUT=$(
 	cd "$INIT_DIR" || exit 1
@@ -593,6 +626,91 @@ printf '\n[18] Help includes new commands\n'
 assert_output_contains "help shows memory" "memory" "$ORCHD" --help
 assert_output_contains "help shows idea" "idea" "$ORCHD" --help
 assert_output_contains "help shows fleet" "fleet" "$ORCHD" --help
+
+printf '\n[19] Ideate (autonomous backlog)\n'
+assert_exit_0 "ideate --help exits 0" "$ORCHD" ideate --help
+assert_output_contains "autopilot help shows continuous" "--continuous" "$ORCHD" autopilot --help
+
+# Parse-only tests (no real runner invocation)
+run_in_dir "$INIT_DIR" "$ORCHD" idea clear --force >/dev/null 2>&1 || true
+
+ORCHD_LIB_DIR="$(dirname "$ORCHD")/../lib"
+IDEATE_OUT="$INIT_DIR/.orchd/ideate_test_out.txt"
+cat >"$IDEATE_OUT" <<'EOF'
+IDEA: Add health check endpoint
+REASON: Needed for ops readiness and monitoring
+
+IDEA: Implement auth middleware
+REASON: Required by project goals for secure endpoints
+
+IDEA: Add integration tests for login
+REASON: Prevent regressions and validate auth flow
+
+IDEA: Add OpenAPI spec generation
+REASON: Improves API usability and contract clarity
+
+IDEA: Add rate limiting to auth endpoints
+REASON: Security hardening for brute force prevention
+
+IDEA: Improve logging format
+REASON: Helps debugging and observability
+
+IDEA: Add CI workflow
+REASON: Enforces quality gates automatically
+EOF
+
+IDEATE_QUEUED_COUNT=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/ideate.sh
+	source "$ORCHD_LIB_DIR/cmd/ideate.sh"
+	# These variables are used by sourced helpers.
+	# shellcheck disable=SC2034
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd"
+	# shellcheck disable=SC2034
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	# shellcheck disable=SC2034
+	LOGS_DIR="$ORCHD_DIR/logs"
+	mkdir -p "$TASKS_DIR" "$LOGS_DIR"
+	_ideate_parse_output "$IDEATE_OUT" false >/dev/null 2>&1 || exit 1
+	queue_count
+)
+if [[ "$IDEATE_QUEUED_COUNT" == "5" ]]; then
+	pass "ideate parse queues max_ideas (default 5)"
+else
+	fail "ideate parse queues max_ideas (expected 5, got: $IDEATE_QUEUED_COUNT)"
+fi
+
+IDEATE_COMPLETE_OUT="$INIT_DIR/.orchd/ideate_complete_out.txt"
+cat >"$IDEATE_COMPLETE_OUT" <<'EOF'
+PROJECT_COMPLETE
+REASON: All goals in the project brief are satisfied.
+EOF
+
+IDEATE_COMPLETE_RC=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/ideate.sh
+	source "$ORCHD_LIB_DIR/cmd/ideate.sh"
+	# shellcheck disable=SC2034
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd"
+	# shellcheck disable=SC2034
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	# shellcheck disable=SC2034
+	LOGS_DIR="$ORCHD_DIR/logs"
+	set +e
+	_ideate_parse_output "$IDEATE_COMPLETE_OUT" true >/dev/null 2>&1
+	echo "$?"
+)
+if [[ "$IDEATE_COMPLETE_RC" == "2" ]]; then
+	pass "ideate parse returns PROJECT_COMPLETE"
+else
+	fail "ideate parse returns PROJECT_COMPLETE (expected 2, got: $IDEATE_COMPLETE_RC)"
+fi
 
 # --- Summary ---
 

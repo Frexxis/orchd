@@ -4,40 +4,54 @@
 # Runs until all tasks reach a terminal state (merged/failed) or deadlock.
 
 cmd_autopilot() {
-	local mode=""
+	local mode="run"
 	local poll_interval=""
+	local continuous=false
 
-	case "${1:-}" in
-	-h | --help)
-		cat <<'EOF'
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			cat <<'EOF'
 usage:
   orchd autopilot [poll_seconds]
+  orchd autopilot --continuous [poll_seconds]
   orchd autopilot --daemon [poll_seconds]
+  orchd autopilot --daemon --continuous [poll_seconds]
   orchd autopilot --status
   orchd autopilot --stop
   orchd autopilot --logs
 EOF
-		return 0
-		;;
-	--daemon | --start)
-		mode="daemon"
-		shift || true
-		;;
-	--status)
-		mode="status"
-		shift || true
-		;;
-	--stop)
-		mode="stop"
-		shift || true
-		;;
-	--logs)
-		mode="logs"
-		shift || true
-		;;
-	esac
-
-	poll_interval="${1:-}"
+			return 0
+			;;
+		--continuous)
+			continuous=true
+			shift
+			;;
+		--daemon | --start)
+			mode="daemon"
+			shift
+			;;
+		--status)
+			mode="status"
+			shift
+			;;
+		--stop)
+			mode="stop"
+			shift
+			;;
+		--logs)
+			mode="logs"
+			shift
+			;;
+		[0-9]*)
+			poll_interval="$1"
+			shift
+			;;
+		*)
+			die "unknown autopilot argument: $1 (try: orchd autopilot --help)"
+			;;
+		esac
+	done
 
 	require_project
 
@@ -55,7 +69,7 @@ EOF
 		return 0
 		;;
 	daemon)
-		_autopilot_start_daemon "$poll_interval"
+		_autopilot_start_daemon "$poll_interval" "$continuous"
 		return 0
 		;;
 	esac
@@ -76,6 +90,18 @@ EOF
 		die "poll interval must be integer seconds: $poll_interval"
 	fi
 
+	# Used via eval updates in _autopilot_ideate
+	# shellcheck disable=SC2034
+	local ideate_cycles=0
+	# shellcheck disable=SC2034
+	local ideate_failures=0
+	local ideate_max_cycles
+	ideate_max_cycles=$(config_get_int "ideate.max_cycles" "20")
+	local ideate_cooldown
+	ideate_cooldown=$(config_get_int "ideate.cooldown_seconds" "30")
+	local ideate_max_failures
+	ideate_max_failures=$(config_get_int "ideate.max_consecutive_failures" "3")
+
 	# Verify tasks exist
 	local task_count=0
 	local tid
@@ -86,7 +112,17 @@ EOF
 
 	# Allow queue-only autopilot startup: if there are no tasks yet, try
 	# planning from the idea queue first.
+	# In continuous mode, try ideation before queue drain.
 	if ((task_count == 0)); then
+		if $continuous; then
+			local ideate_rc=0
+			_autopilot_ideate "$runner" "$ideate_cooldown" "$ideate_max_cycles" "$ideate_max_failures" ideate_cycles ideate_failures || ideate_rc=$?
+			if [[ "$ideate_rc" == "2" ]]; then
+				log_event "INFO" "autopilot: ideate signaled PROJECT_COMPLETE (startup)"
+				printf 'project complete (ideate)\n'
+				return 0
+			fi
+		fi
 		if _autopilot_drain_queue "$runner" "$poll_interval"; then
 			while IFS= read -r tid; do
 				[[ -z "$tid" ]] && continue
@@ -152,6 +188,35 @@ EOF
 				# New tasks were created from the queue; restart the loop
 				continue
 			fi
+
+			if $continuous; then
+				local ideate_rc=0
+				_autopilot_ideate "$runner" "$ideate_cooldown" "$ideate_max_cycles" "$ideate_max_failures" ideate_cycles ideate_failures || ideate_rc=$?
+				case "$ideate_rc" in
+				0)
+					# New ideas were queued; plan them and continue.
+					if _autopilot_drain_queue "$runner" "$poll_interval"; then
+						continue
+					fi
+					;;
+				1)
+					printf '  ideate failed — waiting %ss before retry\n' "$poll_interval"
+					sleep "$poll_interval"
+					continue
+					;;
+				2)
+					log_event "INFO" "autopilot: ideate signaled PROJECT_COMPLETE"
+					_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
+					return 0
+					;;
+				3)
+					# Fatal: no AI runner configured/available
+					printf '  [FATAL] continuous mode requires an AI runner (codex/claude/opencode/aider)\n' >&2
+					log_event "ERROR" "autopilot: continuous mode requires AI runner"
+					return 1
+					;;
+				esac
+			fi
 			_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
 			return 0
 		fi
@@ -190,6 +255,34 @@ EOF
 			# Check idea queue before exiting — continuous operation
 			if _autopilot_drain_queue "$runner" "$poll_interval"; then
 				continue
+			fi
+
+			if $continuous; then
+				local ideate_rc=0
+				_autopilot_ideate "$runner" "$ideate_cooldown" "$ideate_max_cycles" "$ideate_max_failures" ideate_cycles ideate_failures || ideate_rc=$?
+				case "$ideate_rc" in
+				0)
+					if _autopilot_drain_queue "$runner" "$poll_interval"; then
+						continue
+					fi
+					;;
+				1)
+					printf '  ideate failed — waiting %ss before retry\n' "$poll_interval"
+					sleep "$poll_interval"
+					continue
+					;;
+				2)
+					log_event "INFO" "autopilot: ideate signaled PROJECT_COMPLETE"
+					_autopilot_summary "$merged2" "$failed2" "$conflict2" "$needs2"
+					return 0
+					;;
+				3)
+					# Fatal: no AI runner configured/available
+					printf '  [FATAL] continuous mode requires an AI runner (codex/claude/opencode/aider)\n' >&2
+					log_event "ERROR" "autopilot: continuous mode requires AI runner"
+					return 1
+					;;
+				esac
 			fi
 			_autopilot_summary "$merged2" "$failed2" "$conflict2" "$needs2"
 			return 0
@@ -277,6 +370,7 @@ _autopilot_logs() {
 
 _autopilot_start_daemon() {
 	local poll_interval="$1"
+	local continuous="${2:-false}"
 	if _autopilot_is_running; then
 		_autopilot_status
 		return 0
@@ -296,11 +390,82 @@ _autopilot_start_daemon() {
 
 	[[ -n "${ORCHD_BIN:-}" ]] || die "ORCHD_BIN not set (internal error)"
 
-	nohup "$ORCHD_BIN" autopilot "$poll_interval" >"$log_file" 2>&1 &
+	local args="autopilot"
+	if [[ "$continuous" == "true" ]]; then
+		args+=" --continuous"
+	fi
+	if [[ -n "$poll_interval" ]]; then
+		args+=" $poll_interval"
+	fi
+
+	# shellcheck disable=SC2086
+	nohup "$ORCHD_BIN" $args >"$log_file" 2>&1 &
 	local pid=$!
 	printf '%s\n' "$pid" >"$pid_file"
 	printf 'autopilot daemon started (pid %s)\n' "$pid"
 	printf 'log: %s\n' "$log_file"
+}
+
+_autopilot_ideate() {
+	local runner=$1
+	local cooldown=$2
+	local max_cycles=$3
+	local max_failures=$4
+	local cycles_var=$5
+	local failures_var=$6
+
+	local cycles failures
+	cycles=$(eval "printf '%s' \"\${$cycles_var:-0}\"" 2>/dev/null || printf '0')
+	failures=$(eval "printf '%s' \"\${$failures_var:-0}\"" 2>/dev/null || printf '0')
+	if ! [[ "$cycles" =~ ^[0-9]+$ ]]; then
+		cycles=0
+	fi
+	if ! [[ "$failures" =~ ^[0-9]+$ ]]; then
+		failures=0
+	fi
+
+	if [[ "$runner" == "none" ]]; then
+		# Return 3 for fatal "no runner" to distinguish from transient failures
+		return 3
+	fi
+
+	if ((max_cycles > 0)) && ((cycles >= max_cycles)); then
+		log_event "WARN" "autopilot: ideate max_cycles reached ($max_cycles)"
+		return 1
+	fi
+
+	if ((cooldown > 0)); then
+		printf '  ideate cooldown: waiting %ss...\n' "$cooldown"
+		sleep "$cooldown"
+	fi
+
+	cycles=$((cycles + 1))
+	eval "$cycles_var=\"$cycles\""
+	printf '  ideate: generating next ideas (cycle %d)...\n' "$cycles"
+
+	(
+		set +e
+		cmd_ideate
+	)
+	local rc=$?
+	if ((rc != 0)); then
+		if [[ "$rc" == "2" ]]; then
+			failures=0
+			eval "$failures_var=\"$failures\""
+			return 2
+		fi
+		failures=$((failures + 1))
+		eval "$failures_var=\"$failures\""
+		log_event "WARN" "autopilot: ideate failed (rc=$rc failures=$failures)"
+		if ((max_failures > 0)) && ((failures >= max_failures)); then
+			die "ideate failed $failures times (max=$max_failures). Check $ORCHD_DIR/ideate_output.txt and $ORCHD_DIR/ideate_stderr.log"
+		fi
+		return 1
+	fi
+
+	failures=0
+	eval "$failures_var=\"$failures\""
+	return 0
 }
 
 # --- Phase 1: check finished agents ---
@@ -515,6 +680,17 @@ _autopilot_detect_deadlock() {
 _autopilot_drain_queue() {
 	local runner=$1
 	local poll_interval=${2:-30}
+
+	local active_task_count=0
+	local tid status
+	while IFS= read -r tid; do
+		[[ -z "$tid" ]] && continue
+		status=$(task_status "$tid")
+		case "$status" in
+		pending | running) active_task_count=$((active_task_count + 1)) ;;
+		esac
+	done <<<"$(task_list_ids)"
+
 	local in_progress
 	in_progress=$(queue_in_progress_count)
 
@@ -530,11 +706,23 @@ _autopilot_drain_queue() {
 		return 1
 	fi
 
-	# Complete any previously in-progress idea
-	queue_complete_current
+	local idea=""
 
-	local idea
-	idea=$(queue_pop) || return 1
+	# If active tasks exist, we are at the end of a cycle; mark the current in-progress idea
+	# complete before moving on.
+	if ((active_task_count > 0)); then
+		queue_complete_current
+	fi
+
+	# If there is an in-progress idea and no active tasks exist, we likely failed while planning.
+	# Retry planning the same idea without mutating queue state.
+	if ((active_task_count == 0)) && ((in_progress > 0)); then
+		idea=$(queue_current_in_progress 2>/dev/null || true)
+		[[ -n "$idea" ]] || return 1
+	else
+		idea=$(queue_pop) || return 1
+	fi
+
 	local remaining
 	remaining=$(queue_count)
 
@@ -555,22 +743,14 @@ _autopilot_drain_queue() {
 	else
 		log_event "ERROR" "autopilot: plan failed for idea: $idea"
 		printf '  [ERROR] plan generation failed for idea: %s\n' "$idea"
-		printf '  skipping and continuing...\n\n'
-		# Mark as completed (failed) so we don't retry
-		queue_complete_current
-		# Try next idea recursively (bounded by queue size)
-		_autopilot_drain_queue "$runner" "$poll_interval"
-		return $?
+		printf '  will retry later (leaving queue item in-progress)\n\n'
+		return 1
 	fi
 }
 
 # --- Final summary ---
 _autopilot_summary() {
 	local merged=$1 failed=$2 conflict=$3 needs_input=$4
-
-	# Update memory bank with final state
-	memory_update_active_context || true
-	memory_update_progress || true
 
 	printf '\n'
 	printf '┌─────────────────────────────────────┐\n'

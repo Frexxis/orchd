@@ -199,7 +199,10 @@ _merge_commit_memory_updates() {
 		return 0
 	fi
 
+	# Avoid leaving the index dirty if commit is rejected (hooks, config, etc.).
+	git -C "$PROJECT_ROOT" restore --staged -- docs/memory >/dev/null 2>&1 || true
 	log_event "WARN" "memory: failed to commit generated updates for $task_id"
+	printf 'warning: failed to commit memory updates for %s (docs/memory remains modified)\n' "$task_id" >&2
 	return 1
 }
 

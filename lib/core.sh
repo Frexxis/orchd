@@ -131,6 +131,18 @@ config_get() {
 	printf '%s\n' "${value:-$default}"
 }
 
+config_get_int() {
+	local key=$1
+	local default=${2:-0}
+	local val
+	val=$(config_get "$key" "$default")
+	if [[ "$val" =~ ^[0-9]+$ ]]; then
+		printf '%s\n' "$val"
+	else
+		printf '%s\n' "$default"
+	fi
+}
+
 # --- Task state management ---
 
 task_dir() {
@@ -358,8 +370,19 @@ If present, `orchd check` will use them for that task (override > global config 
 - `orchd merge --all`: integrate done tasks in dependency order.
 - `orchd resume <task-id> [reason]`: continue failed/stuck tasks.
 - `orchd autopilot`: run the built-in autonomous loop.
+- `orchd autopilot --continuous [poll]`: keep running until `PROJECT_COMPLETE` (ideate -> plan -> execute loop).
 - `orchd autopilot --daemon [poll]`: run autonomously in background (recommended for long runs).
 - `orchd autopilot --status|--stop|--logs`: manage the daemon.
+- `orchd ideate`: generate the next backlog from `docs/memory/` + codebase context.
+
+## Continuous Autonomous Mode
+
+For fully autonomous project development:
+
+1. Define clear goals and scope in `docs/memory/projectbrief.md`.
+2. Start: `orchd autopilot --continuous` (or `--daemon --continuous` for background).
+3. orchd will: plan -> spawn -> check -> merge -> ideate -> plan -> ... until completion.
+4. orchd exits when ideation outputs `PROJECT_COMPLETE`.
 
 ## Suggested Loop
 
@@ -1412,6 +1435,29 @@ queue_in_progress_count() {
 		esac
 	done <"$qf"
 	printf '%d\n' "$count"
+}
+
+# Print the first in-progress idea text (without timestamp).
+# Returns 1 if none.
+queue_current_in_progress() {
+	local qf
+	qf=$(queue_file)
+	[[ -f "$qf" ]] || return 1
+
+	local line
+	while IFS= read -r line; do
+		case "$line" in
+		'- [>] '*)
+			local rest
+			rest=${line#- [>] }
+			# Strip leading ISO timestamp if present.
+			rest=$(printf '%s' "$rest" | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}T[0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}Z //')
+			printf '%s\n' "$rest"
+			return 0
+			;;
+		esac
+	done <"$qf"
+	return 1
 }
 
 # List all ideas with their status.

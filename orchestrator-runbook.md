@@ -108,6 +108,14 @@ If the orchestrator needs to continue without manual prompts, prefer the built-i
 orchd autopilot --daemon 30
 ```
 
+For fully autonomous development (no human backlog entry), run continuous mode:
+
+```bash
+orchd autopilot --daemon --continuous 30
+```
+
+Continuous mode uses `orchd ideate` when the idea queue is empty to generate the next backlog from `docs/memory/` and the codebase. It stops only when ideation returns `PROJECT_COMPLETE`.
+
 Use `orchd autopilot --status|--logs|--stop` to monitor or stop the loop.
 
 If you only need a passive repo monitor, a tmux loop is sufficient.

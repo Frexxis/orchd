@@ -36,6 +36,7 @@ jobs:
             lib/cmd/memory.sh \
             lib/cmd/idea.sh \
             lib/cmd/fleet.sh \
+            lib/cmd/ideate.sh \
             tests/config_get.sh \
             tests/smoke.sh
 
