@@ -70,9 +70,9 @@ EOF
 
 	local context=""
 	if [[ -d "$PROJECT_ROOT/src" ]] || [[ -d "$PROJECT_ROOT/lib" ]] || [[ -d "$PROJECT_ROOT/app" ]]; then
-		context="Directory structure:\n$(find "$PROJECT_ROOT" -maxdepth 3 -not -path '*/.git/*' -not -path '*/.orchd/*' -not -path '*/node_modules/*' -not -path '*/.worktrees/*' | head -n "$dir_lines")"
+		context="Directory structure:\n$(find "$PROJECT_ROOT" -maxdepth 3 -not -path '*/.git/*' -not -path '*/.orchd/*' -not -path '*/node_modules/*' -not -path '*/.worktrees/*' | awk -v max="$dir_lines" 'NR <= max { print }')"
 	else
-		context="Directory structure:\n$(find "$PROJECT_ROOT" -maxdepth 2 -not -path '*/.git/*' -not -path '*/.orchd/*' | head -n "$dir_lines")"
+		context="Directory structure:\n$(find "$PROJECT_ROOT" -maxdepth 2 -not -path '*/.git/*' -not -path '*/.orchd/*' | awk -v max="$dir_lines" 'NR <= max { print }')"
 	fi
 
 	# Check for package.json, Cargo.toml, etc. for stack detection
@@ -108,6 +108,21 @@ EOF
 	fi
 	if [[ -n "$doc_content" ]]; then
 		context="$context\n\nProject documentation:$doc_content"
+	fi
+
+	# Memory bank: inject structured project memory into planning context
+	local memory_content=""
+	local mem_dir="$PROJECT_ROOT/docs/memory"
+	if [[ -d "$mem_dir" ]]; then
+		local mf
+		for mf in projectbrief.md activeContext.md progress.md systemPatterns.md techContext.md; do
+			if [[ -f "$mem_dir/$mf" ]]; then
+				memory_content="$memory_content\n--- memory/$mf ---\n$(head -n 60 "$mem_dir/$mf")"
+			fi
+		done
+	fi
+	if [[ -n "$memory_content" ]]; then
+		context="$context\n\nProject memory bank:$memory_content"
 	fi
 
 	# Truncate context if needed
@@ -331,7 +346,7 @@ _parse_plan_output() {
 		return 1
 	fi
 
-	ORCHD_PLAN_TASK_COUNT="$count"
+	export ORCHD_PLAN_TASK_COUNT="$count"
 
 	printf '\nparsed %d tasks:\n\n' "$count"
 	_print_task_table

@@ -138,6 +138,21 @@ _merge_single() {
 	task_set "$task_id" "status" "merged"
 	task_set "$task_id" "merged_at" "$(now_iso)"
 
+	# Write/update memory bank. Keep this isolated from user edits and avoid
+	# leaving the base branch dirty after merge.
+	local memory_clean=true
+	if ! git -C "$PROJECT_ROOT" diff --quiet -- docs/memory 2>/dev/null || ! git -C "$PROJECT_ROOT" diff --cached --quiet -- docs/memory 2>/dev/null; then
+		memory_clean=false
+	fi
+
+	memory_write_lesson "$task_id" || true
+	memory_update_progress || true
+	if $memory_clean; then
+		_merge_commit_memory_updates "$task_id" || true
+	else
+		log_event "WARN" "memory: skipped auto-commit for $task_id (docs/memory has local changes)"
+	fi
+
 	printf 'merged: %s\n' "$task_id"
 	log_event "INFO" "task merged: $task_id ($branch -> $base_branch)"
 
@@ -165,6 +180,27 @@ _merge_single() {
 	if ((unblocked > 0)); then
 		printf '\n%d task(s) unblocked — run: orchd spawn --all\n' "$unblocked"
 	fi
+}
+
+_merge_commit_memory_updates() {
+	local task_id=$1
+
+	if [[ ! -d "$PROJECT_ROOT/docs/memory" ]]; then
+		return 0
+	fi
+
+	git -C "$PROJECT_ROOT" add -A -- docs/memory >/dev/null 2>&1 || return 0
+	if git -C "$PROJECT_ROOT" diff --cached --quiet -- docs/memory; then
+		return 0
+	fi
+
+	if git -C "$PROJECT_ROOT" commit -m "docs(memory): update after merging $task_id" -- docs/memory >/dev/null 2>&1; then
+		log_event "INFO" "memory: committed updates for $task_id"
+		return 0
+	fi
+
+	log_event "WARN" "memory: failed to commit generated updates for $task_id"
+	return 1
 }
 
 _merge_all_ready() {

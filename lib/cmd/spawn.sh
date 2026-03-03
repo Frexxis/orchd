@@ -18,7 +18,8 @@ cmd_spawn() {
 			shift
 			;;
 		-h | --help)
-			die "usage: orchd spawn <task-id> | orchd spawn --all [--runner <runner>]"
+			printf 'usage: orchd spawn <task-id> | orchd spawn --all [--runner <runner>]\n'
+			return 0
 			;;
 		*)
 			if [[ -z "$target" ]]; then
@@ -200,6 +201,14 @@ _build_kickoff_prompt() {
 	prompt=$(replace_token "$prompt" "{acceptance_criteria}" "$acceptance")
 	prompt=$(replace_token "$prompt" "{agent_role}" "$role")
 	prompt=$(replace_token "$prompt" "{worktree_path}" "$worktree_path")
+
+	# Inject memory bank context
+	local memory_ctx
+	memory_ctx=$(memory_read_context)
+	if [[ -z "$memory_ctx" ]]; then
+		memory_ctx="(no project memory yet — you are the first agent)"
+	fi
+	prompt=$(replace_token "$prompt" "{memory_context}" "$memory_ctx")
 
 	printf '%s\n' "$prompt"
 }

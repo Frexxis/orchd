@@ -84,6 +84,17 @@ EOF
 		task_count=$((task_count + 1))
 	done <<<"$(task_list_ids)"
 
+	# Allow queue-only autopilot startup: if there are no tasks yet, try
+	# planning from the idea queue first.
+	if ((task_count == 0)); then
+		if _autopilot_drain_queue "$runner" "$poll_interval"; then
+			while IFS= read -r tid; do
+				[[ -z "$tid" ]] && continue
+				task_count=$((task_count + 1))
+			done <<<"$(task_list_ids)"
+		fi
+	fi
+
 	if ((task_count == 0)); then
 		die "no tasks found. Run: orchd plan \"<description>\" first"
 	fi
@@ -136,6 +147,11 @@ EOF
 		# --- Terminal: all tasks in final state ---
 		# Note: `failed` is not terminal here because autopilot can retry failed tasks.
 		if ((total > 0)) && ((merged + conflict + needs_input >= total)); then
+			# Check idea queue before exiting — continuous operation
+			if _autopilot_drain_queue "$runner" "$poll_interval"; then
+				# New tasks were created from the queue; restart the loop
+				continue
+			fi
 			_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
 			return 0
 		fi
@@ -171,6 +187,10 @@ EOF
 			esac
 		done <<<"$(task_list_ids)"
 		if ((total2 > 0)) && ((merged2 + conflict2 + needs2 >= total2)); then
+			# Check idea queue before exiting — continuous operation
+			if _autopilot_drain_queue "$runner" "$poll_interval"; then
+				continue
+			fi
 			_autopilot_summary "$merged2" "$failed2" "$conflict2" "$needs2"
 			return 0
 		fi
@@ -182,10 +202,12 @@ EOF
 }
 
 _autopilot_pid_file() {
+	# shellcheck disable=SC2153
 	printf '%s/autopilot.pid' "$ORCHD_DIR"
 }
 
 _autopilot_log_file() {
+	# shellcheck disable=SC2153
 	printf '%s/autopilot.log' "$ORCHD_DIR"
 }
 
@@ -487,9 +509,68 @@ _autopilot_detect_deadlock() {
 	return 1
 }
 
+# --- Queue drain: pick next idea and plan it ---
+# Returns 0 if a new plan was created (caller should restart the loop).
+# Returns 1 if no ideas remain or planning failed.
+_autopilot_drain_queue() {
+	local runner=$1
+	local poll_interval=${2:-30}
+	local in_progress
+	in_progress=$(queue_in_progress_count)
+
+	local pending_ideas
+	pending_ideas=$(queue_count)
+	if ((pending_ideas == 0)) && ((in_progress == 0)); then
+		return 1
+	fi
+
+	# Do not mutate queue state if we cannot plan.
+	if [[ "$runner" == "none" ]]; then
+		log_event "ERROR" "autopilot: cannot plan from queue — no runner available"
+		return 1
+	fi
+
+	# Complete any previously in-progress idea
+	queue_complete_current
+
+	local idea
+	idea=$(queue_pop) || return 1
+	local remaining
+	remaining=$(queue_count)
+
+	printf '\n'
+	printf '┌─────────────────────────────────────┐\n'
+	printf '│     idea queue: picking next idea    │\n'
+	printf '├─────────────────────────────────────┤\n'
+	printf '│  idea: %-29s │\n' "$(printf '%.29s' "$idea")"
+	printf '│  remaining: %-24d │\n' "$remaining"
+	printf '└─────────────────────────────────────┘\n'
+
+	log_event "INFO" "autopilot: draining queue — planning idea: $idea"
+
+	if (cmd_plan "$idea" 2>&1) | sed 's/^/  [plan] /'; then
+		log_event "INFO" "autopilot: plan created from idea queue"
+		printf '\n  new plan created — restarting autopilot loop\n\n'
+		return 0
+	else
+		log_event "ERROR" "autopilot: plan failed for idea: $idea"
+		printf '  [ERROR] plan generation failed for idea: %s\n' "$idea"
+		printf '  skipping and continuing...\n\n'
+		# Mark as completed (failed) so we don't retry
+		queue_complete_current
+		# Try next idea recursively (bounded by queue size)
+		_autopilot_drain_queue "$runner" "$poll_interval"
+		return $?
+	fi
+}
+
 # --- Final summary ---
 _autopilot_summary() {
 	local merged=$1 failed=$2 conflict=$3 needs_input=$4
+
+	# Update memory bank with final state
+	memory_update_active_context || true
+	memory_update_progress || true
 
 	printf '\n'
 	printf '┌─────────────────────────────────────┐\n'

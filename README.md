@@ -2,7 +2,7 @@
 
 Autonomous AI agent orchestrator for software engineering.
 
-Tell orchd what to build. It breaks the project into tasks, spawns AI agents in parallel, monitors their progress, runs quality gates, and merges everything — fully autonomous.
+Tell orchd what to build. It breaks the project into tasks, spawns AI agents in parallel, monitors their progress, runs quality gates, and merges completed work autonomously.
 
 ## How It Works
 
@@ -78,8 +78,8 @@ orchd merge --all
 
 | Command | Description |
 |---|---|
-| `orchd init [dir]` | Initialize orchd in a project (creates `.orchd.toml`) |
-| `orchd plan "<description>"` | Use AI to generate a task DAG from a description |
+| `orchd init [dir] [description]` | Initialize orchd in a project (creates `.orchd.toml`) |
+| `orchd plan [--runner <runner>] "<description>"` | Use AI to generate a task DAG from a description |
 | `orchd plan --file <path>` | Load/parse an existing plan output file into `.orchd/tasks/` |
 | `orchd plan --stdin` | Read plan output from stdin and parse into `.orchd/tasks/` |
 | `orchd review [ref]` | Run review-only agent on changes or a ref |
@@ -87,9 +87,40 @@ orchd merge --all
 | `orchd resume <task> [reason...]` | Resume/continue a task in its existing worktree |
 | `orchd board [--watch]` | Live terminal dashboard showing all agent status |
 | `orchd state [--json]` | Print a snapshot of task state (machine-friendly) |
+| `orchd await [--all\|<task>]` | Block until a task changes or an agent exits |
 | `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
 | `orchd merge <task\|--all>` | Merge completed tasks in dependency order |
 | `orchd autopilot [poll_seconds]` | Fully autonomous: spawn/check/merge loop |
+| `orchd autopilot --daemon/--status/--stop/--logs` | Run and manage autopilot in background |
+
+### Memory Bank
+
+| Command | Description |
+|---|---|
+| `orchd memory` | Show memory bank status |
+| `orchd memory init` | Initialize memory bank scaffold (`docs/memory/`) |
+| `orchd memory show` | Print all memory bank contents |
+| `orchd memory update` | Update progress/context from current task state |
+| `orchd memory reset --force` | Remove all memory bank files |
+
+### Idea Queue
+
+| Command | Description |
+|---|---|
+| `orchd idea "<idea>"` | Queue an idea for continuous autopilot |
+| `orchd idea list` | List all queued ideas with status |
+| `orchd idea count` | Show number of pending ideas |
+| `orchd idea clear --force` | Remove all pending ideas |
+
+### Fleet Management
+
+| Command | Description |
+|---|---|
+| `orchd fleet list` | List configured fleet projects |
+| `orchd fleet autopilot` | Start autopilot daemon for all fleet projects |
+| `orchd fleet status` | Show autopilot status for all projects |
+| `orchd fleet stop` | Stop all fleet autopilot daemons |
+| `orchd fleet brief [hours]` | Summary of recent activity (default 24h) |
 
 ### Utilities
 
@@ -157,7 +188,7 @@ auto-detect suitable commands based on the project stack.
 orchd/
 ├── bin/orchd                    # Main entry point / dispatcher
 ├── lib/
-│   ├── core.sh                  # Config, state, worktree, logging
+│   ├── core.sh                  # Config, state, worktree, logging, memory, queue, fleet
 │   ├── runner.sh                # Multi-runner adapter system
 │   └── cmd/
 │       ├── init.sh              # orchd init
@@ -167,8 +198,11 @@ orchd/
 │       ├── board.sh             # orchd board (live TUI dashboard)
 │       ├── check.sh             # orchd check (quality gates)
 │       ├── merge.sh             # orchd merge (DAG-ordered integration)
-│       ├── autopilot.sh         # orchd autopilot (autonomous loop)
+│       ├── autopilot.sh         # orchd autopilot (autonomous loop + queue drain)
 │       ├── resume.sh            # orchd resume (continuation)
+│       ├── memory.sh            # orchd memory (memory bank management)
+│       ├── idea.sh              # orchd idea (idea queue)
+│       ├── fleet.sh             # orchd fleet (multi-project management)
 │       ├── doctor.sh            # orchd doctor (effective config)
 │       └── refresh_docs.sh      # orchd refresh-docs (policy docs)
 ├── templates/
@@ -182,7 +216,7 @@ orchd/
 ├── CLAUDE.md                     # Claude Code entry pointer
 ├── orchestrator-runbook.md      # Comprehensive orchestration runbook
 ├── tests/config_get.sh          # Config parser regression tests
-├── tests/smoke.sh               # Smoke tests (54 tests)
+├── tests/smoke.sh               # End-to-end smoke tests
 ├── .github/workflows/ci.yml    # CI: ShellCheck + config/smoke tests (Ubuntu/macOS)
 ├── LICENSE
 └── README.md
@@ -212,6 +246,80 @@ Core principles, roles, agent CLI standards, prompt contracts, launch sequences,
 
 7. **`orchd autopilot`** combines all of the above into a single autonomous loop: spawn ready tasks, poll until agents finish, check quality gates, retry failed tasks (bounded + backoff), merge in DAG order, spawn newly unblocked tasks, repeat until all tasks reach a terminal state (`merged`/`failed`/`needs_input`) or deadlock is detected.
 
+## Memory Bank
+
+orchd maintains a structured project memory under `docs/memory/` (git-tracked) inspired by [Cline Memory Bank](https://docs.cline.bot/improving-your-experience/memory-bank). The memory bank gives every AI agent persistent context about the project — goals, architecture decisions, current progress, and lessons learned from previous tasks.
+
+**Files:**
+
+| File | Purpose |
+|---|---|
+| `projectbrief.md` | Project goals, scope, and product context |
+| `techContext.md` | Tech stack, tooling, and development setup |
+| `systemPatterns.md` | Architecture patterns and design decisions |
+| `activeContext.md` | Current orchestration state (auto-updated) |
+| `progress.md` | Task progress snapshot (auto-updated) |
+| `lessons/` | Per-task lesson files (worker-authored, with orchestrator fallback) |
+
+**How it works:**
+
+1. `orchd memory init` creates the scaffold. You fill in `projectbrief.md` and `techContext.md`.
+2. When agents are spawned or resumed, `memory_read_context()` concatenates all memory files (respecting `memory_max_chars` budget, default 12000) and injects them into the prompt via the `{memory_context}` token.
+3. After a successful merge, orchd preserves worker-authored `docs/memory/lessons/{task_id}.md` files; if one is missing, it writes a fallback lesson from task report evidence. It then updates `progress.md` mechanically (no AI call).
+4. During autopilot completion, `activeContext.md` and `progress.md` are refreshed mechanically.
+5. `orchd plan` also reads the memory bank, so planning decisions benefit from accumulated project knowledge.
+
+Workers can write lesson files keyed by task ID for conflict-free history across parallel tasks.
+
+## Idea Queue
+
+The idea queue lets you feed orchd a backlog of ideas that get executed one-by-one in autopilot until the queue is empty.
+
+```bash
+# Queue some ideas
+orchd idea "add rate limiting to the API"
+orchd idea "write integration tests for auth flow"
+orchd idea "add OpenAPI spec generation"
+
+# Start autopilot — it will plan and execute the current tasks,
+# then pop the next idea, run orchd plan, and continue autonomously
+orchd autopilot
+```
+
+**How it works:**
+
+1. `orchd idea "..."` appends a line to `.orchd/queue.md` with `- [ ]` (pending) status.
+2. When `orchd autopilot` reaches a terminal state (all tasks merged/failed/needs_input), it calls `_autopilot_drain_queue()`.
+3. The drain function pops the next pending idea (marks it `[>]` in-progress), runs `orchd plan "$idea"` to generate a fresh task DAG, and restarts the autopilot loop.
+4. When that idea's tasks complete, the idea is marked `[x]` (done) and the next one is popped.
+5. This continues until the queue is empty, at which point autopilot exits normally.
+
+Ideas keep a full audit trail in `queue.md` — you can see which ideas were completed, which are in-progress, and which are still pending.
+
+## Fleet Mode
+
+Fleet mode manages multiple orchd projects from a single command. Define your projects in `~/.orchd/fleet.toml`:
+
+```toml
+[projects.api]
+path = "/home/user/projects/my-api"
+
+[projects.frontend]
+path = "/home/user/projects/frontend"
+
+[projects.docs]
+path = "/home/user/projects/documentation"
+```
+
+**Commands:**
+
+- `orchd fleet autopilot` — starts a background autopilot daemon (`nohup`) for each valid orchd project in the fleet config. Each project runs independently with its own log file (`.orchd/autopilot.log`) and PID file (`.orchd/autopilot.pid`).
+- `orchd fleet status` — shows a table with autopilot state, task progress (merged/total), and running/failed counts per project.
+- `orchd fleet stop` — sends SIGTERM to all running fleet daemons.
+- `orchd fleet brief [hours]` — summarizes recent activity across all projects by parsing `orchd.log` and reading task state. Defaults to last 24 hours. Shows merged/failed/needs_input counts, autopilot status, and pending queue depth per project.
+
+Fleet mode combined with the idea queue enables fully autonomous multi-project operation: queue ideas for each project, run `orchd fleet autopilot`, and let orchd work through everything.
+
 ## Requirements
 
 - `git`, `tmux`
@@ -221,7 +329,7 @@ Core principles, roles, agent CLI standards, prompt contracts, launch sequences,
 ## Testing
 
 ```bash
-./tests/smoke.sh              # 54 smoke tests
+./tests/smoke.sh              # Run smoke test suite
 shellcheck bin/orchd lib/*.sh lib/cmd/*.sh tests/smoke.sh
 ```
 
