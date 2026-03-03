@@ -47,3 +47,19 @@ When finished, create TASK_REPORT.md at the worktree root with:
   ```
 - Rollback note (what triggers rollback + how to revert)
 - Risks/notes for the orchestrator
+
+## Memory Bank Lesson (Required)
+
+When finished, also create or update `docs/memory/lessons/{task_id}.md` in your worktree with:
+
+- What you built / changed
+- Key decisions you made and why
+- Patterns or conventions you discovered in the codebase
+- Pitfalls or gotchas future agents should know about
+- Any technical debt introduced
+
+This lesson file helps future agents learn from your work.
+
+## Project Memory (context from previous tasks)
+
+{memory_context}

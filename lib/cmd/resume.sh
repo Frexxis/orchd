@@ -161,6 +161,14 @@ EOF
 	prompt=$(replace_token "$prompt" "{attempt}" "$attempt")
 	prompt=$(replace_token "$prompt" "{resume_reason}" "$reason")
 
+	# Inject memory bank context
+	local memory_ctx
+	memory_ctx=$(memory_read_context)
+	if [[ -z "$memory_ctx" ]]; then
+		memory_ctx="(no project memory yet)"
+	fi
+	prompt=$(replace_token "$prompt" "{memory_context}" "$memory_ctx")
+
 	# Attach last check summary if present (kept short)
 	local check_file
 	check_file="$(task_dir "$task_id")/last_check.txt"

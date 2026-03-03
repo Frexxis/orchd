@@ -56,6 +56,12 @@ source "$ORCHD_LIB_DIR/cmd/autopilot.sh"
 source "$ORCHD_LIB_DIR/cmd/state.sh"
 # shellcheck source=../lib/cmd/await.sh
 source "$ORCHD_LIB_DIR/cmd/await.sh"
+# shellcheck source=../lib/cmd/memory.sh
+source "$ORCHD_LIB_DIR/cmd/memory.sh"
+# shellcheck source=../lib/cmd/idea.sh
+source "$ORCHD_LIB_DIR/cmd/idea.sh"
+# shellcheck source=../lib/cmd/fleet.sh
+source "$ORCHD_LIB_DIR/cmd/fleet.sh"
 
 # --- Usage ---
 usage() {
@@ -79,7 +85,27 @@ Orchestration commands:
   orchd autopilot --stop                Stop autopilot daemon
   orchd autopilot --logs                Tail autopilot daemon log
   orchd doctor [dir]                   Show effective config and auto-detect
-  orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR docs
+  orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR/CLAUDE/OPENCODE/runbook docs
+
+Memory bank:
+  orchd memory                         Show memory bank status
+  orchd memory init                    Initialize memory bank scaffold
+  orchd memory show                    Print all memory bank contents
+  orchd memory update                  Update progress/context from task state
+  orchd memory reset --force           Remove all memory bank files
+
+Idea queue:
+  orchd idea "<idea>"                  Queue an idea for continuous autopilot
+  orchd idea list                      List queued ideas
+  orchd idea count                     Count pending ideas
+  orchd idea clear --force             Remove all pending ideas
+
+Fleet management:
+  orchd fleet list                     List configured fleet projects
+  orchd fleet autopilot                Start autopilot for all fleet projects
+  orchd fleet status                   Show fleet autopilot status
+  orchd fleet stop                     Stop all fleet autopilot daemons
+  orchd fleet brief [hours]            Summary of recent activity (default 24h)
 
 Runner notes:
   - Codex runs sandboxed by default. Configure `codex_flags` in .orchd.toml if needed.
@@ -104,6 +130,11 @@ Workflow:
   orchd board --watch
   orchd check --all
   orchd merge --all
+
+Continuous mode:
+  orchd idea "add user dashboard"
+  orchd idea "implement notifications"
+  orchd autopilot                        # runs all tasks, then picks up ideas
 EOF
 }
 
@@ -233,6 +264,15 @@ case "$cmd" in
     ;;
   autopilot)
     cmd_autopilot "$@"
+    ;;
+  memory)
+    cmd_memory "$@"
+    ;;
+  idea)
+    cmd_idea "$@"
+    ;;
+  fleet)
+    cmd_fleet "$@"
     ;;
 
   # === Monitor commands (original) ===

@@ -177,6 +177,7 @@ assert_exit_nonzero "attach without session fails" "$ORCHD" attach
 assert_exit_nonzero "stop without session fails" "$ORCHD" stop
 assert_exit_nonzero "status without session fails" "$ORCHD" status
 assert_exit_nonzero "unknown command fails" "$ORCHD" foobar
+assert_exit_0 "spawn --help exits 0" "$ORCHD" spawn --help
 
 printf '\n[3] List (no sessions)\n'
 assert_exit_0 "list exits 0" "$ORCHD" list
@@ -385,6 +386,213 @@ printf 'agent-z-fail-stop\n' >"$INIT_DIR/.orchd/tasks/z-fail-stop/branch"
 assert_exit_nonzero "merge --all fails when post-merge tests fail" run_in_dir "$INIT_DIR" "$ORCHD" merge --all
 assert_task_status "first failing task marked failed" "$INIT_DIR" "a-fail-stop" "failed"
 assert_task_status "later task remains unmerged" "$INIT_DIR" "z-fail-stop" "done"
+
+# Restore test_cmd to empty so remaining tests aren't affected by false.
+set_test_cmd "$INIT_DIR/.orchd.toml" ""
+
+printf '\n[14] Memory bank commands\n'
+assert_exit_0 "memory (no memory yet) exits 0" run_in_dir "$INIT_DIR" "$ORCHD" memory
+assert_exit_0 "memory --help exits 0" run_in_dir "$INIT_DIR" "$ORCHD" memory --help
+assert_exit_0 "memory init exits 0" run_in_dir "$INIT_DIR" "$ORCHD" memory init
+
+if [[ -d "$INIT_DIR/docs/memory" ]]; then
+	pass "memory init creates docs/memory/"
+else
+	fail "memory init creates docs/memory/"
+fi
+
+if [[ -f "$INIT_DIR/docs/memory/projectbrief.md" ]]; then
+	pass "memory init creates projectbrief.md"
+else
+	fail "memory init creates projectbrief.md"
+fi
+
+if [[ -f "$INIT_DIR/docs/memory/activeContext.md" ]]; then
+	pass "memory init creates activeContext.md"
+else
+	fail "memory init creates activeContext.md"
+fi
+
+if [[ -f "$INIT_DIR/docs/memory/progress.md" ]]; then
+	pass "memory init creates progress.md"
+else
+	fail "memory init creates progress.md"
+fi
+
+if [[ -f "$INIT_DIR/docs/memory/systemPatterns.md" ]]; then
+	pass "memory init creates systemPatterns.md"
+else
+	fail "memory init creates systemPatterns.md"
+fi
+
+if [[ -f "$INIT_DIR/docs/memory/techContext.md" ]]; then
+	pass "memory init creates techContext.md"
+else
+	fail "memory init creates techContext.md"
+fi
+
+if [[ -d "$INIT_DIR/docs/memory/lessons" ]]; then
+	pass "memory init creates lessons/"
+else
+	fail "memory init creates lessons/"
+fi
+
+assert_exit_0 "memory show exits 0" run_in_dir "$INIT_DIR" "$ORCHD" memory show
+assert_exit_0 "memory update exits 0" run_in_dir "$INIT_DIR" "$ORCHD" memory update
+assert_output_contains "memory status shows projectbrief" "projectbrief.md" run_in_dir "$INIT_DIR" "$ORCHD" memory
+assert_exit_nonzero "memory reset without --force fails" run_in_dir "$INIT_DIR" "$ORCHD" memory reset
+assert_exit_0 "memory reset --force exits 0" run_in_dir "$INIT_DIR" "$ORCHD" memory reset --force
+
+if [[ ! -d "$INIT_DIR/docs/memory" ]]; then
+	pass "memory reset removes docs/memory/"
+else
+	fail "memory reset removes docs/memory/"
+fi
+
+# Re-init memory for merge test below
+run_in_dir "$INIT_DIR" "$ORCHD" memory init >/dev/null 2>&1
+
+printf '\n[15] Memory bank merge integration\n'
+# Create a task with a TASK_REPORT.md, mark done, and merge — verify lesson is written.
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+run_in_dir "$INIT_DIR" git checkout -q -b "agent-memory-lesson-test"
+printf 'memory-lesson-test\n' >"$INIT_DIR/mem_lesson_test.txt"
+run_in_dir "$INIT_DIR" git add "mem_lesson_test.txt"
+run_in_dir "$INIT_DIR" git commit -q -m "test: memory lesson"
+# Write a minimal TASK_REPORT.md in the branch (it lives as a local file — irrelevant for merge)
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+
+mkdir -p "$INIT_DIR/.orchd/tasks/memory-lesson-test"
+printf 'done\n' >"$INIT_DIR/.orchd/tasks/memory-lesson-test/status"
+printf 'agent-memory-lesson-test\n' >"$INIT_DIR/.orchd/tasks/memory-lesson-test/branch"
+printf 'Memory lesson test task\n' >"$INIT_DIR/.orchd/tasks/memory-lesson-test/title"
+printf 'Test memory lesson writing\n' >"$INIT_DIR/.orchd/tasks/memory-lesson-test/description"
+
+assert_exit_0 "merge writes memory lesson" run_in_dir "$INIT_DIR" "$ORCHD" merge "memory-lesson-test"
+
+if [[ -f "$INIT_DIR/docs/memory/lessons/memory-lesson-test.md" ]]; then
+	pass "lesson file created after merge"
+else
+	fail "lesson file created after merge"
+fi
+
+if [[ -f "$INIT_DIR/docs/memory/progress.md" ]]; then
+	if grep -q "memory-lesson-test" "$INIT_DIR/docs/memory/progress.md" 2>/dev/null; then
+		pass "progress.md updated after merge"
+	else
+		fail "progress.md updated after merge (task not found in progress)"
+	fi
+else
+	fail "progress.md updated after merge (file missing)"
+fi
+
+printf '\n[16] Idea queue commands\n'
+assert_exit_0 "idea --help exits 0" run_in_dir "$INIT_DIR" "$ORCHD" idea --help
+assert_exit_nonzero "idea without args fails" run_in_dir "$INIT_DIR" "$ORCHD" idea
+assert_exit_0 "idea queues an idea" run_in_dir "$INIT_DIR" "$ORCHD" idea "build user dashboard"
+assert_exit_0 "idea queues second idea" run_in_dir "$INIT_DIR" "$ORCHD" idea "add notifications"
+
+if [[ -f "$INIT_DIR/.orchd/queue.md" ]]; then
+	pass "queue.md created"
+else
+	fail "queue.md created"
+fi
+
+assert_output_contains "idea list shows first idea" "build user dashboard" run_in_dir "$INIT_DIR" "$ORCHD" idea list
+assert_output_contains "idea list shows second idea" "add notifications" run_in_dir "$INIT_DIR" "$ORCHD" idea list
+assert_output_contains "idea count shows 2" "2" run_in_dir "$INIT_DIR" "$ORCHD" idea count
+
+# Verify queue drain does not consume ideas when runner is unavailable.
+ORCHD_LIB_DIR="$(dirname "$ORCHD")/../lib"
+QUEUE_COUNT_AFTER_NONE=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/autopilot.sh
+	source "$ORCHD_LIB_DIR/cmd/autopilot.sh"
+	# These variables are used by sourced helpers.
+	# shellcheck disable=SC2034
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd"
+	# shellcheck disable=SC2034
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	# shellcheck disable=SC2034
+	LOGS_DIR="$ORCHD_DIR/logs"
+	_autopilot_drain_queue "none" 0 >/dev/null 2>&1 || true
+	queue_count
+)
+if [[ "$QUEUE_COUNT_AFTER_NONE" == "2" ]]; then
+	pass "queue drain keeps ideas when runner unavailable"
+else
+	fail "queue drain keeps ideas when runner unavailable (got: $QUEUE_COUNT_AFTER_NONE)"
+fi
+
+# Test queue_pop via internal helper (source core.sh to get helpers)
+QUEUE_POP_OUTPUT=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# These variables are used by functions in core.sh
+	# shellcheck disable=SC2034
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd"
+	# shellcheck disable=SC2034
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	# shellcheck disable=SC2034
+	LOGS_DIR="$ORCHD_DIR/logs"
+	queue_pop
+)
+if [[ "$QUEUE_POP_OUTPUT" == "build user dashboard" ]]; then
+	pass "queue_pop returns first idea"
+else
+	fail "queue_pop returns first idea (got: $QUEUE_POP_OUTPUT)"
+fi
+
+assert_output_contains "idea count after pop is 1" "1" run_in_dir "$INIT_DIR" "$ORCHD" idea count
+
+assert_exit_nonzero "idea clear without --force fails" run_in_dir "$INIT_DIR" "$ORCHD" idea clear
+assert_exit_0 "idea clear --force exits 0" run_in_dir "$INIT_DIR" "$ORCHD" idea clear --force
+assert_output_contains "idea count after clear is 0" "0" run_in_dir "$INIT_DIR" "$ORCHD" idea count
+
+printf '\n[17] Fleet commands\n'
+assert_exit_0 "fleet --help exits 0" "$ORCHD" fleet --help
+assert_exit_nonzero "fleet list without config fails" "$ORCHD" fleet list
+
+# Create a temporary fleet config
+FLEET_DIR=$(mktemp -d)
+FLEET_CFG="$FLEET_DIR/fleet.toml"
+FLEET_SPACE_PATH="$FLEET_DIR/project with space"
+mkdir -p "$FLEET_SPACE_PATH"
+cat >"$FLEET_CFG" <<TOML
+[projects.testproj]
+path = "$INIT_DIR"
+
+[projects.missing]
+path = "/nonexistent/path"
+
+[projects.spaced]
+path = "$FLEET_SPACE_PATH"
+TOML
+export ORCHD_STATE_DIR="$FLEET_DIR"
+
+assert_exit_0 "fleet list with config exits 0" "$ORCHD" fleet list
+assert_output_contains "fleet list shows testproj" "testproj" "$ORCHD" fleet list
+assert_output_contains "fleet list shows missing" "missing" "$ORCHD" fleet list
+assert_output_contains "fleet list preserves spaces" "project with space" "$ORCHD" fleet list
+assert_exit_0 "fleet status exits 0" "$ORCHD" fleet status
+assert_output_contains "fleet status shows testproj" "testproj" "$ORCHD" fleet status
+assert_exit_0 "fleet brief exits 0" "$ORCHD" fleet brief
+assert_output_contains "fleet brief shows testproj" "testproj" "$ORCHD" fleet brief
+assert_exit_0 "fleet stop exits 0" "$ORCHD" fleet stop
+
+# Restore state dir
+export ORCHD_STATE_DIR="$ORCHD_TEST_STATE_DIR"
+rm -rf "$FLEET_DIR"
+
+printf '\n[18] Help includes new commands\n'
+assert_output_contains "help shows memory" "memory" "$ORCHD" --help
+assert_output_contains "help shows idea" "idea" "$ORCHD" --help
+assert_output_contains "help shows fleet" "fleet" "$ORCHD" --help
 
 # --- Summary ---
 

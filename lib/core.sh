@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/core.sh - Shared utilities, config loading, state management
+# lib/core.sh - Shared utilities, config loading, state management, memory bank, idea queue
 # Sourced by bin/orchd — do not execute directly.
 
 # --- Project root detection ---
@@ -311,6 +311,18 @@ Operational guide for AI orchestrators.
 ## Required Reading
 
 - Read `orchestrator-runbook.md` for detailed operational guidance.
+
+## Memory Bank
+
+Before planning or making decisions, read `docs/memory/` for project context:
+- `projectbrief.md` — Project goals, scope, and product context
+- `activeContext.md` — Current work focus, recent changes, active decisions
+- `progress.md` — What works, what's left, known issues
+- `systemPatterns.md` — Architecture, patterns, component relationships
+- `techContext.md` — Stack, dependencies, dev environment
+- `lessons/` — Per-task learnings from completed work
+
+If `docs/memory/` does not exist, run `orchd memory init` or proceed without it.
 
 ## Objective
 
@@ -895,4 +907,586 @@ worktree_remove() {
 		git -C "$repo_dir" worktree remove --force "$worktree_path" 2>/dev/null || true
 		log_event "INFO" "worktree removed: $worktree_path"
 	fi
+}
+
+# ============================================================================
+# Memory Bank — Cline-inspired structured project memory for multi-agent use
+# ============================================================================
+#
+# docs/memory/
+# ├── projectbrief.md    — Project goals, scope, product context (user/init)
+# ├── systemPatterns.md  — Architecture, patterns, component relationships
+# ├── techContext.md      — Stack, deps, dev environment, constraints
+# ├── activeContext.md    — Current focus, recent changes, active decisions
+# ├── progress.md         — What works, what's left, known issues
+# └── lessons/            — Per-task learnings (auto-written by workers)
+#       ├── task-auth.md
+#       └── ...
+
+MEMORY_BANK_FILES=(projectbrief.md systemPatterns.md techContext.md activeContext.md progress.md)
+
+memory_dir() {
+	local dir="${PROJECT_ROOT}/docs/memory"
+	mkdir -p "$dir" "$dir/lessons"
+	printf '%s\n' "$dir"
+}
+
+memory_ensure_scaffold() {
+	local mem_dir
+	mem_dir=$(memory_dir)
+
+	if [[ ! -f "$mem_dir/projectbrief.md" ]]; then
+		local name desc
+		name=$(config_get "project.name" "")
+		desc=$(config_get "project.description" "")
+		cat >"$mem_dir/projectbrief.md" <<EOF
+# Project Brief
+
+## Project Name
+${name:-$(basename "$PROJECT_ROOT")}
+
+## Description
+${desc:-No description provided. Edit this file to define project goals, scope, and product context.}
+
+## Goals
+- (define project goals here)
+
+## Scope
+- IN: (what is in scope)
+- OUT: (what is out of scope)
+
+## Product Context
+- Why this project exists: (fill in)
+- Problems it solves: (fill in)
+- User experience goals: (fill in)
+EOF
+	fi
+
+	if [[ ! -f "$mem_dir/systemPatterns.md" ]]; then
+		cat >"$mem_dir/systemPatterns.md" <<'EOF'
+# System Patterns
+
+## Architecture
+- (describe system architecture)
+
+## Key Technical Decisions
+- (list decisions and rationale)
+
+## Design Patterns in Use
+- (patterns used in the codebase)
+
+## Component Relationships
+- (how components interact)
+EOF
+	fi
+
+	if [[ ! -f "$mem_dir/techContext.md" ]]; then
+		cat >"$mem_dir/techContext.md" <<'EOF'
+# Tech Context
+
+## Technologies Used
+- (list stack components)
+
+## Development Setup
+- (how to set up the dev environment)
+
+## Technical Constraints
+- (limitations, compatibility requirements)
+
+## Dependencies
+- (key dependencies)
+EOF
+	fi
+
+	if [[ ! -f "$mem_dir/activeContext.md" ]]; then
+		cat >"$mem_dir/activeContext.md" <<'EOF'
+# Active Context
+
+## Current Focus
+- (what is being worked on now)
+
+## Recent Changes
+- (latest completed work)
+
+## Next Steps
+- (upcoming work)
+
+## Active Decisions
+- (decisions under consideration)
+EOF
+	fi
+
+	if [[ ! -f "$mem_dir/progress.md" ]]; then
+		cat >"$mem_dir/progress.md" <<'EOF'
+# Progress
+
+## What Works
+- (completed and verified functionality)
+
+## What's Left to Build
+- (remaining work)
+
+## Current Status
+- Project initialized
+
+## Known Issues
+- (none yet)
+EOF
+	fi
+}
+
+# Read all memory bank files and compose a context string for agent prompts.
+# Respects a configurable character limit (memory_max_chars, default 12000).
+memory_read_context() {
+	local mem_dir="${PROJECT_ROOT}/docs/memory"
+	if [[ ! -d "$mem_dir" ]]; then
+		return 0
+	fi
+
+	local max_chars
+	max_chars=$(config_get "memory_max_chars" "12000")
+	if ! [[ "$max_chars" =~ ^[0-9]+$ ]]; then
+		max_chars=12000
+	fi
+
+	local context=""
+	local file_name
+
+	# 1. Core memory files (always included, in hierarchy order)
+	for file_name in "${MEMORY_BANK_FILES[@]}"; do
+		if [[ -f "$mem_dir/$file_name" ]]; then
+			local content
+			content=$(cat "$mem_dir/$file_name" 2>/dev/null || true)
+			if [[ -n "$content" ]]; then
+				context+="--- ${file_name} ---"$'\n'"${content}"$'\n\n'
+			fi
+		fi
+	done
+
+	# 2. Lessons (newest first, appended until budget exhausted)
+	if [[ -d "$mem_dir/lessons" ]]; then
+		local lesson_files=()
+		local lf
+		while IFS= read -r lf; do
+			[[ -n "$lf" ]] && lesson_files+=("$lf")
+		done < <(ls -t "$mem_dir/lessons"/*.md 2>/dev/null || true)
+
+		if ((${#lesson_files[@]} > 0)); then
+			context+="--- lessons (from completed tasks) ---"$'\n'
+			for lf in "${lesson_files[@]}"; do
+				local lcontent
+				lcontent=$(cat "$lf" 2>/dev/null || true)
+				if [[ -n "$lcontent" ]]; then
+					context+=$'\n'"${lcontent}"$'\n'
+				fi
+				# Check budget after each lesson
+				if ((${#context} >= max_chars)); then
+					break
+				fi
+			done
+		fi
+	fi
+
+	# Truncate if over budget
+	if ((${#context} > max_chars)); then
+		context="${context:0:max_chars}"
+		context+=$'\n[MEMORY TRUNCATED: limit reached]'
+	fi
+
+	printf '%s' "$context"
+}
+
+# Write a lesson entry for a completed task.
+# Called by the orchestrator after successful merge.
+# Sources: TASK_REPORT.md (archived copy in task state dir).
+memory_write_lesson() {
+	local task_id=$1
+	local mem_dir
+	mem_dir=$(memory_dir)
+	local lesson_file
+	lesson_file="$mem_dir/lessons/${task_id}.md"
+
+	# Preserve worker-authored lessons if they already exist.
+	if [[ -s "$lesson_file" ]]; then
+		log_event "INFO" "memory: lesson exists for $task_id (preserved)"
+		return 0
+	fi
+
+	local title description
+	title=$(task_get "$task_id" "title" "$task_id")
+	description=$(task_get "$task_id" "description" "")
+
+	# Find the archived task report
+	local report_content=""
+	local attempts
+	attempts=$(task_get "$task_id" "attempts" "0")
+	if ! [[ "$attempts" =~ ^[0-9]+$ ]]; then
+		attempts=0
+	fi
+	local report_file
+	report_file=$(task_get "$task_id" "task_report_file" "")
+	if [[ -n "$report_file" ]] && [[ -f "$report_file" ]]; then
+		report_content=$(cat "$report_file" 2>/dev/null || true)
+	fi
+
+	# Also check worktree for TASK_REPORT.md if not archived yet
+	if [[ -z "$report_content" ]]; then
+		local worktree
+		worktree=$(task_get "$task_id" "worktree" "")
+		if [[ -n "$worktree" ]] && [[ -f "$worktree/TASK_REPORT.md" ]]; then
+			report_content=$(cat "$worktree/TASK_REPORT.md" 2>/dev/null || true)
+		fi
+	fi
+
+	local ts
+	ts=$(now_iso)
+
+	cat >"$lesson_file" <<EOF
+### Task: ${task_id}
+**Title:** ${title}
+**Merged:** ${ts}
+**Description:** ${description}
+
+#### Summary
+$(if [[ -n "$report_content" ]]; then
+		# Extract summary: everything before EVIDENCE block (or first 20 lines)
+		printf '%s\n' "$report_content" | awk '/^EVIDENCE:/{exit} {print}' | head -n 20
+	else
+		printf 'No task report available.\n'
+	fi)
+
+#### Evidence
+$(if [[ -n "$report_content" ]]; then
+		printf '%s\n' "$report_content" | awk '/^EVIDENCE:/,0' | head -n 15
+	else
+		printf 'No evidence captured.\n'
+	fi)
+EOF
+
+	log_event "INFO" "memory: lesson written for $task_id"
+}
+
+# Update progress.md with current task state snapshot.
+# Called by orchestrator after merge or autopilot cycle.
+memory_update_progress() {
+	local mem_dir
+	mem_dir=$(memory_dir)
+
+	local ts
+	ts=$(now_iso)
+
+	local total=0 merged=0 failed=0 pending=0 running=0 needs_input=0
+	local merged_list="" pending_list="" failed_list=""
+	local task_id status
+	while IFS= read -r task_id; do
+		[[ -z "$task_id" ]] && continue
+		total=$((total + 1))
+		status=$(task_status "$task_id")
+		local title
+		title=$(task_get "$task_id" "title" "$task_id")
+		case "$status" in
+		merged)
+			merged=$((merged + 1))
+			merged_list+="- [x] ${task_id}: ${title}"$'\n'
+			;;
+		failed)
+			failed=$((failed + 1))
+			failed_list+="- [!] ${task_id}: ${title}"$'\n'
+			;;
+		pending)
+			pending=$((pending + 1))
+			pending_list+="- [ ] ${task_id}: ${title}"$'\n'
+			;;
+		running) running=$((running + 1)) ;;
+		needs_input) needs_input=$((needs_input + 1)) ;;
+		esac
+	done <<<"$(task_list_ids)"
+
+	cat >"$mem_dir/progress.md" <<EOF
+# Progress
+
+*Last updated: ${ts}*
+
+## Summary
+- Total tasks: ${total}
+- Merged: ${merged}
+- Pending: ${pending}
+- Running: ${running}
+- Failed: ${failed}
+- Needs input: ${needs_input}
+
+## Completed (merged)
+${merged_list:-  (none yet)}
+
+## Remaining
+${pending_list:-  (none)}
+
+## Issues
+${failed_list:-  (none)}
+EOF
+}
+
+# Update activeContext.md with current orchestration state.
+# Called at the end of autopilot cycles.
+memory_update_active_context() {
+	local mem_dir
+	mem_dir=$(memory_dir)
+
+	local ts
+	ts=$(now_iso)
+
+	local focus=""
+	local recent=""
+	local next=""
+
+	# Gather running tasks as current focus
+	local task_id status
+	while IFS= read -r task_id; do
+		[[ -z "$task_id" ]] && continue
+		status=$(task_status "$task_id")
+		local title
+		title=$(task_get "$task_id" "title" "$task_id")
+		case "$status" in
+		running)
+			focus+="- ${task_id}: ${title} (running)"$'\n'
+			;;
+		pending)
+			if task_is_ready "$task_id"; then
+				next+="- ${task_id}: ${title} (ready to spawn)"$'\n'
+			else
+				next+="- ${task_id}: ${title} (waiting for deps)"$'\n'
+			fi
+			;;
+		merged)
+			recent+="- ${task_id}: ${title} (merged)"$'\n'
+			;;
+		esac
+	done <<<"$(task_list_ids)"
+
+	cat >"$mem_dir/activeContext.md" <<EOF
+# Active Context
+
+*Last updated: ${ts}*
+
+## Current Focus
+${focus:-  (no tasks currently running)}
+
+## Recent Changes
+${recent:-  (no tasks merged yet)}
+
+## Next Steps
+${next:-  (no pending tasks)}
+
+## Active Decisions
+- (auto-generated context — edit manually for important decisions)
+EOF
+}
+
+# ============================================================================
+# Idea Queue — Persistent idea backlog for continuous autopilot operation
+# ============================================================================
+#
+# Ideas are stored in .orchd/queue.md as a checklist:
+#   - [ ] 2024-01-15T10:30:00Z Build user dashboard
+#   - [x] 2024-01-15T09:00:00Z Add auth middleware (completed)
+
+queue_file() {
+	printf '%s\n' "$ORCHD_DIR/queue.md"
+}
+
+queue_ensure() {
+	local qf
+	qf=$(queue_file)
+	if [[ ! -f "$qf" ]]; then
+		cat >"$qf" <<'EOF'
+# orchd Idea Queue
+# Add ideas with: orchd idea "your idea here"
+# Autopilot will pick them up automatically when current tasks complete.
+EOF
+	fi
+}
+
+queue_push() {
+	local idea=$1
+	queue_ensure
+	local qf ts
+	qf=$(queue_file)
+	ts=$(now_iso)
+	printf -- '- [ ] %s %s\n' "$ts" "$idea" >>"$qf"
+	log_event "INFO" "idea queued: $idea"
+}
+
+# Pop the first uncompleted idea. Prints the idea text (without timestamp).
+# Returns 1 if no ideas remain.
+queue_pop() {
+	local qf
+	qf=$(queue_file)
+	[[ -f "$qf" ]] || return 1
+
+	local idea_line=""
+	local idea_text=""
+	local line_num=0
+	local found_num=0
+
+	while IFS= read -r line; do
+		line_num=$((line_num + 1))
+		if [[ "$line" =~ ^-\ \[\ \]\ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\ (.+)$ ]]; then
+			if [[ -z "$idea_line" ]]; then
+				idea_line="$line"
+				idea_text="${BASH_REMATCH[1]}"
+				found_num=$line_num
+			fi
+		fi
+	done <"$qf"
+
+	if [[ -z "$idea_text" ]]; then
+		return 1
+	fi
+
+	# Mark as popped: - [ ] -> - [>] (in-progress)
+	local tmp
+	tmp=$(mktemp)
+	awk -v target="$found_num" '
+		NR == target {
+			sub(/^- \[ \]/, "- [>]")
+		}
+		{ print }
+	' "$qf" >"$tmp"
+	mv "$tmp" "$qf"
+
+	printf '%s\n' "$idea_text"
+	log_event "INFO" "idea popped: $idea_text"
+	return 0
+}
+
+# Mark the currently in-progress idea as completed.
+queue_complete_current() {
+	local qf
+	qf=$(queue_file)
+	[[ -f "$qf" ]] || return 0
+
+	local tmp
+	tmp=$(mktemp)
+	# Only mark the first [>] as [x]; leave others untouched
+	awk '
+		!done && /^- \[>\]/ {
+			sub(/^- \[>\]/, "- [x]")
+			done = 1
+		}
+		{ print }
+	' "$qf" >"$tmp"
+	mv "$tmp" "$qf"
+}
+
+# Count pending (uncompleted) ideas in the queue.
+queue_count() {
+	local qf
+	qf=$(queue_file)
+	[[ -f "$qf" ]] || {
+		printf '0\n'
+		return 0
+	}
+
+	local count=0
+	while IFS= read -r line; do
+		if [[ "$line" =~ ^-\ \[\ \]\ .+ ]]; then
+			count=$((count + 1))
+		fi
+	done <"$qf"
+	printf '%d\n' "$count"
+}
+
+# Count in-progress ideas (marked with [>]).
+queue_in_progress_count() {
+	local qf
+	qf=$(queue_file)
+	[[ -f "$qf" ]] || {
+		printf '0\n'
+		return 0
+	}
+
+	local count=0
+	while IFS= read -r line; do
+		case "$line" in
+		'- [>] '*) count=$((count + 1)) ;;
+		esac
+	done <"$qf"
+	printf '%d\n' "$count"
+}
+
+# List all ideas with their status.
+queue_list() {
+	local qf
+	qf=$(queue_file)
+	if [[ ! -f "$qf" ]]; then
+		printf 'no ideas queued (use: orchd idea "your idea")\n'
+		return 0
+	fi
+
+	local pending=0 completed=0 in_progress=0
+	while IFS= read -r line; do
+		case "$line" in
+		'- [ ] '*)
+			pending=$((pending + 1))
+			printf '  %s\n' "$line"
+			;;
+		'- [>] '*)
+			in_progress=$((in_progress + 1))
+			printf '  %s\n' "$line"
+			;;
+		'- [x] '*)
+			completed=$((completed + 1))
+			printf '  %s\n' "$line"
+			;;
+		esac
+	done <"$qf"
+
+	printf '\npending: %d  in-progress: %d  completed: %d\n' "$pending" "$in_progress" "$completed"
+}
+
+# ============================================================================
+# Fleet — Multi-project management via ~/.orchd/fleet.toml
+# ============================================================================
+
+fleet_config_file() {
+	printf '%s\n' "${ORCHD_STATE_DIR:-$HOME/.orchd}/fleet.toml"
+}
+
+# Parse fleet.toml and list project entries as "id<TAB>path" lines.
+# Format:
+#   [projects.myapi]
+#   path = "/home/user/projects/my-api"
+fleet_list_projects() {
+	local cfg
+	cfg=$(fleet_config_file)
+	[[ -f "$cfg" ]] || return 1
+
+	awk '
+		function trim(s) {
+			sub(/^[[:space:]]+/, "", s)
+			sub(/[[:space:]]+$/, "", s)
+			return s
+		}
+		/^[[:space:]]*\[projects\.[^]]+\]/ {
+			sec = $0
+			sub(/^[[:space:]]*\[projects\./, "", sec)
+			sub(/\][[:space:]]*$/, "", sec)
+			current_id = trim(sec)
+			next
+		}
+		/^[[:space:]]*\[/ {
+			current_id = ""
+			next
+		}
+		current_id != "" && /^[[:space:]]*path[[:space:]]*=/ {
+			val = $0
+			sub(/^[^=]*=[[:space:]]*/, "", val)
+			gsub(/^"/, "", val)
+			gsub(/"[[:space:]]*(#.*)?$/, "", val)
+			val = trim(val)
+			if (val != "") {
+				print current_id "\t" val
+			}
+		}
+	' "$cfg"
 }
