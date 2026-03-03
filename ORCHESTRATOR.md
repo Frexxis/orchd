@@ -6,6 +6,18 @@ Operational guide for AI orchestrators.
 
 - Read `orchestrator-runbook.md` for detailed operational guidance.
 
+## Memory Bank
+
+Before planning or making decisions, read `docs/memory/` for project context:
+- `projectbrief.md` -- Project goals, scope, and product context
+- `activeContext.md` -- Current work focus, recent changes, active decisions
+- `progress.md` -- What works, what's left, known issues
+- `systemPatterns.md` -- Architecture, patterns, component relationships
+- `techContext.md` -- Stack, dependencies, dev environment
+- `lessons/` -- Per-task learnings from completed work
+
+If `docs/memory/` does not exist, run `orchd memory init` or proceed without it.
+
 ## Objective
 
 Drive the project to completion by coordinating workers through `orchd`.
@@ -40,8 +52,19 @@ If present, `orchd check` will use them for that task (override > global config 
 - `orchd merge --all`: integrate done tasks in dependency order.
 - `orchd resume <task-id> [reason]`: continue failed/stuck tasks.
 - `orchd autopilot`: run the built-in autonomous loop.
+- `orchd autopilot --continuous [poll]`: keep running until `PROJECT_COMPLETE` (ideate -> plan -> execute loop).
 - `orchd autopilot --daemon [poll]`: run autonomously in background (recommended for long runs).
 - `orchd autopilot --status|--stop|--logs`: manage the daemon.
+- `orchd ideate`: generate the next backlog from `docs/memory/` + codebase context.
+
+## Continuous Autonomous Mode
+
+For fully autonomous project development:
+
+1. Define clear goals and scope in `docs/memory/projectbrief.md`.
+2. Start: `orchd autopilot --continuous` (or `--daemon --continuous` for background).
+3. orchd will: plan -> spawn -> check -> merge -> ideate -> plan -> ... until completion.
+4. orchd exits when ideation outputs `PROJECT_COMPLETE`.
 
 ## Suggested Loop
 

@@ -29,6 +29,12 @@ cmd_doctor() {
 	test_cmd=$(config_get "test_cmd" "")
 	build_cmd=$(config_get "build_cmd" "")
 
+	local ideate_max_ideas ideate_cooldown ideate_max_cycles ideate_max_failures
+	ideate_max_ideas=$(config_get_int "ideate.max_ideas" "5")
+	ideate_cooldown=$(config_get_int "ideate.cooldown_seconds" "30")
+	ideate_max_cycles=$(config_get_int "ideate.max_cycles" "20")
+	ideate_max_failures=$(config_get_int "ideate.max_consecutive_failures" "3")
+
 	quality_detect_cmds "$PROJECT_ROOT"
 
 	local eff_lint eff_test eff_build
@@ -48,6 +54,12 @@ cmd_doctor() {
 	printf 'base_branch:   %s\n' "$base_branch"
 	printf 'worktree_dir:  %s\n' "$worktree_dir"
 	printf 'max_parallel:  %s\n' "$max_parallel"
+
+	printf '\nideate:\n'
+	printf '  max_ideas:                 %s\n' "$ideate_max_ideas"
+	printf '  cooldown_seconds:          %s\n' "$ideate_cooldown"
+	printf '  max_cycles:                %s\n' "$ideate_max_cycles"
+	printf '  max_consecutive_failures:  %s\n' "$ideate_max_failures"
 
 	printf '\nquality (config):\n'
 	printf '  lint_cmd:  %s\n' "${lint_cmd:-<auto>}"

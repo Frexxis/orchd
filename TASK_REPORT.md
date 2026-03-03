@@ -2,45 +2,37 @@
 
 ## Summary
 
-- Hardened the new Memory Bank, Idea Queue, and Fleet features after a multi-agent review.
-- Fixed queue drain safety in autopilot:
-  - Queue items are no longer popped when runner is unavailable.
-  - Queue draining now considers in-progress items and supports queue-only startup (`orchd autopilot` can plan from queue when task list is empty).
-- Fixed memory writeback behavior:
-  - Preserve worker-authored lesson files (`docs/memory/lessons/{task_id}.md`) instead of overwriting.
-  - Keep mechanical progress updates and auto-commit memory changes when `docs/memory` is clean.
-- Removed `pipefail` hazards in planning context collection by replacing `find | head` with bounded `awk` selection.
-- Fixed fleet path parsing for whitespace-containing paths (trim edges only, preserve internal spaces).
-- Improved fleet daemon reliability checks (verify PID is alive after start).
-- Implemented real time-window filtering for `fleet brief [hours]` using log timestamps.
-- Hardened memory status char counting when no lesson files exist.
-- Normalized UX: `orchd spawn --help` now exits successfully.
-- Updated docs and CI for consistency:
-  - README command/behavior alignment (`await`, `plan --runner`, autopilot daemon flags, testing wording, memory/fleet behavior wording).
-  - CI ShellCheck now includes `lib/cmd/state.sh` and `lib/cmd/await.sh`.
-- Expanded smoke tests with targeted regressions for:
-  - queue drain behavior when runner is unavailable,
-  - fleet paths containing spaces,
-  - spawn help exit behavior.
+- Added true autonomous mode via ideation:
+  - New `orchd ideate` command generates the next backlog from `docs/memory/` + codebase context.
+  - New `orchd autopilot --continuous` runs ideate -> plan -> execute cycles until ideation returns `PROJECT_COMPLETE`.
+  - Continuous mode works with the daemon: `orchd autopilot --daemon --continuous [poll_seconds]`.
+- Added `templates/ideate.prompt` to enforce a strict, parseable ideation output format.
+- Added `.orchd.toml` defaults under `[ideate]` (max ideas, cooldown, max cycles, failure cap) and display them in `orchd doctor`.
+- Hardened CLI/test ergonomics:
+  - `tests/smoke.sh` `assert_output_contains` now uses `grep -q --` (patterns starting with `-` are safe).
+  - Added smoke coverage for `ideate` parsing and `autopilot --continuous` help.
+- Autopilot continuous-mode robustness:
+  - Ideation failures no longer terminate autopilot/daemon immediately; it waits and retries until success, `PROJECT_COMPLETE`, or the configured failure cap.
 
 ## Files Modified/Created
 
 - `.github/workflows/ci.yml`
+- `ORCHESTRATOR.md`
 - `README.md`
 - `bin/orchd`
 - `lib/core.sh`
 - `lib/cmd/autopilot.sh`
-- `lib/cmd/fleet.sh`
-- `lib/cmd/memory.sh`
-- `lib/cmd/merge.sh`
-- `lib/cmd/plan.sh`
-- `lib/cmd/spawn.sh`
+- `lib/cmd/doctor.sh`
+- `lib/cmd/init.sh`
+- `lib/cmd/ideate.sh`
+- `orchestrator-runbook.md`
+- `templates/ideate.prompt`
 - `tests/smoke.sh`
 
 ## Tests Run
 
 - `shellcheck --exclude=SC1091 bin/orchd lib/*.sh lib/cmd/*.sh tests/smoke.sh`
-- `bash tests/smoke.sh` -> `109 passed, 0 failed`
+- `bash tests/smoke.sh` -> `=== Results: 113 passed, 0 failed, 113 total ===`
 
 EVIDENCE:
 - CMD: `shellcheck --exclude=SC1091 bin/orchd lib/*.sh lib/cmd/*.sh tests/smoke.sh`
@@ -48,13 +40,14 @@ EVIDENCE:
   OUTPUT: No findings.
 - CMD: `bash tests/smoke.sh`
   RESULT: PASS
-  OUTPUT: `=== Results: 109 passed, 0 failed, 109 total ===`
-
-## Rollback Note
-
-- Trigger rollback if: queue ideas start getting stuck in `[>]`, fleet paths with spaces regress, or merge starts leaving unexpected dirty `docs/memory` state on clean repos.
-- Revert with: `git revert <this-change-sha>` (or selectively revert affected files: `lib/cmd/autopilot.sh`, `lib/core.sh`, `lib/cmd/merge.sh`, `lib/cmd/fleet.sh`, `lib/cmd/plan.sh`).
+  OUTPUT: `=== Results: 113 passed, 0 failed, 113 total ===`
 
 ## Risks/Notes
 
-- Memory auto-commit in merge runs only when `docs/memory` has no pre-existing local changes; when local edits exist, memory is still updated but auto-commit is skipped to avoid mixing with user edits.
+- Continuous mode depends on the orchestrator runner producing output that matches `templates/ideate.prompt`. If it drifts, ideation may fail/loop until `ideate.max_consecutive_failures` is hit.
+- `autopilot --continuous` includes guardrails: cooldown, max cycles, and failure cap (configurable under `[ideate]`).
+
+## Rollback Note
+
+- Trigger rollback if: continuous autopilot fails to stop on `PROJECT_COMPLETE`, or starts consuming queue items without planning new tasks.
+- Revert with: `git revert <sha>` (or selectively revert `lib/cmd/autopilot.sh`, `lib/cmd/ideate.sh`, `templates/ideate.prompt`, `bin/orchd`).

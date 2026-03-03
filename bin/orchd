@@ -62,6 +62,8 @@ source "$ORCHD_LIB_DIR/cmd/memory.sh"
 source "$ORCHD_LIB_DIR/cmd/idea.sh"
 # shellcheck source=../lib/cmd/fleet.sh
 source "$ORCHD_LIB_DIR/cmd/fleet.sh"
+# shellcheck source=../lib/cmd/ideate.sh
+source "$ORCHD_LIB_DIR/cmd/ideate.sh"
 
 # --- Usage ---
 usage() {
@@ -80,6 +82,7 @@ Orchestration commands:
   orchd merge  <task-id> | --all       Merge completed tasks (DAG order)
   orchd resume <task-id> [reason...]    Resume/continue a task in its worktree
   orchd autopilot [poll_seconds]        Fully autonomous: spawn/check/merge loop
+  orchd autopilot --continuous [poll]   Fully autonomous until project complete
   orchd autopilot --daemon [poll]       Run autopilot in background
   orchd autopilot --status              Show autopilot daemon status
   orchd autopilot --stop                Stop autopilot daemon
@@ -107,6 +110,10 @@ Fleet management:
   orchd fleet stop                     Stop all fleet autopilot daemons
   orchd fleet brief [hours]            Summary of recent activity (default 24h)
 
+Ideation:
+  orchd ideate                         Generate next ideas from project goals
+  orchd ideate --dry-run               Show suggestions without queueing
+
 Runner notes:
   - Codex runs sandboxed by default. Configure `codex_flags` in .orchd.toml if needed.
 
@@ -132,9 +139,7 @@ Workflow:
   orchd merge --all
 
 Continuous mode:
-  orchd idea "add user dashboard"
-  orchd idea "implement notifications"
-  orchd autopilot                        # runs all tasks, then picks up ideas
+  orchd autopilot --continuous            # runs until PROJECT_COMPLETE
 EOF
 }
 
@@ -273,6 +278,9 @@ case "$cmd" in
     ;;
   fleet)
     cmd_fleet "$@"
+    ;;
+  ideate)
+    cmd_ideate "$@"
     ;;
 
   # === Monitor commands (original) ===

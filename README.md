@@ -91,6 +91,7 @@ orchd merge --all
 | `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
 | `orchd merge <task\|--all>` | Merge completed tasks in dependency order |
 | `orchd autopilot [poll_seconds]` | Fully autonomous: spawn/check/merge loop |
+| `orchd autopilot --continuous [poll_seconds]` | Fully autonomous until the project is complete (ideate -> plan -> execute loop) |
 | `orchd autopilot --daemon/--status/--stop/--logs` | Run and manage autopilot in background |
 
 ### Memory Bank
@@ -111,6 +112,13 @@ orchd merge --all
 | `orchd idea list` | List all queued ideas with status |
 | `orchd idea count` | Show number of pending ideas |
 | `orchd idea clear --force` | Remove all pending ideas |
+
+### Ideation
+
+| Command | Description |
+|---|---|
+| `orchd ideate` | Ask the orchestrator runner for the next 1-5 ideas from `docs/memory/` + codebase context |
+| `orchd ideate --dry-run` | Show suggested ideas without queueing |
 
 ### Fleet Management
 
@@ -266,14 +274,14 @@ orchd maintains a structured project memory under `docs/memory/` (git-tracked) i
 1. `orchd memory init` creates the scaffold. You fill in `projectbrief.md` and `techContext.md`.
 2. When agents are spawned or resumed, `memory_read_context()` concatenates all memory files (respecting `memory_max_chars` budget, default 12000) and injects them into the prompt via the `{memory_context}` token.
 3. After a successful merge, orchd preserves worker-authored `docs/memory/lessons/{task_id}.md` files; if one is missing, it writes a fallback lesson from task report evidence. It then updates `progress.md` mechanically (no AI call).
-4. During autopilot completion, `activeContext.md` and `progress.md` are refreshed mechanically.
+4. Use `orchd memory update` to refresh `activeContext.md` and `progress.md` mechanically from task state.
 5. `orchd plan` also reads the memory bank, so planning decisions benefit from accumulated project knowledge.
 
 Workers can write lesson files keyed by task ID for conflict-free history across parallel tasks.
 
 ## Idea Queue
 
-The idea queue lets you feed orchd a backlog of ideas that get executed one-by-one in autopilot until the queue is empty.
+The idea queue lets you feed orchd a backlog of ideas that get executed one-by-one in autopilot.
 
 ```bash
 # Queue some ideas
@@ -281,9 +289,13 @@ orchd idea "add rate limiting to the API"
 orchd idea "write integration tests for auth flow"
 orchd idea "add OpenAPI spec generation"
 
-# Start autopilot — it will plan and execute the current tasks,
-# then pop the next idea, run orchd plan, and continue autonomously
+# Start autopilot — it will plan and execute tasks,
+# then pop the next idea, run orchd plan, and continue
 orchd autopilot
+
+# Fully autonomous mode (no human idea entry):
+# when the queue is empty, orchd will ideate new work from docs/memory
+orchd autopilot --continuous
 ```
 
 **How it works:**
@@ -292,7 +304,7 @@ orchd autopilot
 2. When `orchd autopilot` reaches a terminal state (all tasks merged/failed/needs_input), it calls `_autopilot_drain_queue()`.
 3. The drain function pops the next pending idea (marks it `[>]` in-progress), runs `orchd plan "$idea"` to generate a fresh task DAG, and restarts the autopilot loop.
 4. When that idea's tasks complete, the idea is marked `[x]` (done) and the next one is popped.
-5. This continues until the queue is empty, at which point autopilot exits normally.
+5. This continues until the queue is empty. With `orchd autopilot --continuous`, orchd will then run `orchd ideate` to generate the next backlog until the project is complete.
 
 Ideas keep a full audit trail in `queue.md` — you can see which ideas were completed, which are in-progress, and which are still pending.
 
