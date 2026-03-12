@@ -92,6 +92,56 @@ set_test_cmd() {
 	mv "$tmp" "$cfg"
 }
 
+set_build_cmd() {
+	local cfg=$1
+	local cmd=$2
+	local tmp
+	tmp=$(mktemp)
+	awk -v cmd="$cmd" '
+		/^[[:space:]]*build_cmd[[:space:]]*=/ {
+			print "build_cmd = \"" cmd "\""
+			next
+		}
+		{ print }
+	' "$cfg" >"$tmp"
+	mv "$tmp" "$cfg"
+}
+
+set_orchestrator_profile() {
+	local cfg=$1
+	local profile=$2
+	local tmp
+	tmp=$(mktemp)
+	awk -v profile="$profile" '
+		BEGIN { in_orchestrator = 0; written = 0 }
+		/^\[/ {
+			if (in_orchestrator && !written) {
+				print "profile = \"" profile "\""
+				written = 1
+			}
+			in_orchestrator = ($0 ~ /^\[orchestrator\]$/)
+			print
+			next
+		}
+		{
+			if (in_orchestrator && $0 ~ /^[[:space:]]*profile[[:space:]]*=/) {
+				if (!written) {
+					print "profile = \"" profile "\""
+					written = 1
+				}
+				next
+			}
+			print
+		}
+		END {
+			if (in_orchestrator && !written) {
+				print "profile = \"" profile "\""
+			}
+		}
+	' "$cfg" >"$tmp"
+	mv "$tmp" "$cfg"
+}
+
 assert_task_status() {
 	local desc=$1
 	local repo_dir=$2
@@ -229,6 +279,12 @@ else
 	fail "config file not created"
 fi
 
+if grep -q '^[[:space:]]*profile = "fast"$' "$INIT_DIR/.orchd.toml" 2>/dev/null; then
+	pass "init defaults profile to fast"
+else
+	fail "init defaults profile to fast"
+fi
+
 if [[ -d "$INIT_DIR/.orchd/tasks" ]]; then
 	pass "state directory created"
 else
@@ -346,6 +402,36 @@ printf '\n[9] Utility commands (in initialized project)\n'
 assert_exit_0 "doctor in init dir" run_in_dir "$INIT_DIR" "$ORCHD" doctor
 assert_exit_0 "refresh-docs in init dir" run_in_dir "$INIT_DIR" "$ORCHD" refresh-docs
 
+printf '\n[9a] Doctor reports fast effective settings\n'
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "fast"
+DOCTOR_FAST_OUT=$(run_in_dir "$INIT_DIR" "$ORCHD" doctor)
+if printf '%s' "$DOCTOR_FAST_OUT" | grep -q 'profile: .*fast'; then
+	pass "doctor shows fast profile"
+else
+	fail "doctor shows fast profile"
+fi
+if printf '%s' "$DOCTOR_FAST_OUT" | grep -q 'max_parallel:  *8'; then
+	pass "doctor shows fast max_parallel"
+else
+	fail "doctor shows fast max_parallel"
+fi
+if printf '%s' "$DOCTOR_FAST_OUT" | grep -q 'autopilot_poll:  *2'; then
+	pass "doctor shows fast autopilot poll"
+else
+	fail "doctor shows fast autopilot poll"
+fi
+if printf '%s' "$DOCTOR_FAST_OUT" | grep -q 'verification_profile:  *fast'; then
+	pass "doctor shows fast verification profile"
+else
+	fail "doctor shows fast verification profile"
+fi
+if printf '%s' "$DOCTOR_FAST_OUT" | grep -q 'post_merge_test:  *never'; then
+	pass "doctor shows fast post-merge policy"
+else
+	fail "doctor shows fast post-merge policy"
+fi
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "balanced"
+
 printf '\n[9b] Python auto-detect prefers venv bins\n'
 mkdir -p "$INIT_DIR/.venv/bin"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$INIT_DIR/.venv/bin/python"
@@ -365,6 +451,51 @@ if printf '%s' "$DETECT_OUT" | grep -q '^\.venv/bin/ruff'; then
 else
 	fail "python lint auto-detect uses .venv/bin/ruff"
 fi
+
+printf '\n[9c] Spawn uses fast effective parallelism\n'
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "fast"
+SPAWN_FAST_COUNT=$(
+	cd "$INIT_DIR" || exit 1
+	ORCHD_LIB_DIR="$(dirname "$ORCHD")/../lib"
+	SPAWN_CAPTURE="$INIT_DIR/.orchd/spawn_capture.txt"
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/runner.sh
+	source "$ORCHD_LIB_DIR/runner.sh"
+	# shellcheck source=../lib/cmd/spawn.sh
+	source "$ORCHD_LIB_DIR/cmd/spawn.sh"
+	# shellcheck disable=SC2034
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd"
+	# shellcheck disable=SC2034
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	# shellcheck disable=SC2034
+	LOGS_DIR="$ORCHD_DIR/logs"
+	for task_id in fast-spawn-a fast-spawn-b fast-spawn-c fast-spawn-d fast-spawn-e; do
+		mkdir -p "$TASKS_DIR/$task_id"
+		printf 'pending\n' >"$TASKS_DIR/$task_id/status"
+		rm -f "$TASKS_DIR/$task_id/deps"
+	done
+	_spawn_single() {
+		printf '%s\n' "$1" >>"$SPAWN_CAPTURE"
+		return 0
+	}
+	_spawn_all_ready "opencode" >/dev/null
+	wc -l <"$SPAWN_CAPTURE"
+)
+if [[ "$SPAWN_FAST_COUNT" == "5" ]]; then
+	pass "spawn uses fast max_parallel"
+else
+	fail "spawn uses fast max_parallel (got: $SPAWN_FAST_COUNT)"
+fi
+rm -rf \
+	"$INIT_DIR/.orchd/tasks/fast-spawn-a" \
+	"$INIT_DIR/.orchd/tasks/fast-spawn-b" \
+	"$INIT_DIR/.orchd/tasks/fast-spawn-c" \
+	"$INIT_DIR/.orchd/tasks/fast-spawn-d" \
+	"$INIT_DIR/.orchd/tasks/fast-spawn-e" \
+	"$INIT_DIR/.orchd/spawn_capture.txt"
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "balanced"
 
 printf '\n[10] Help includes orchestration commands\n'
 assert_output_contains "help shows init" "init" "$ORCHD" --help
@@ -416,6 +547,95 @@ printf 'agent-autopilot-merge\n' >"$INIT_DIR/.orchd/tasks/autopilot-merge/branch
 
 assert_exit_0 "autopilot merges done task" run_in_dir "$INIT_DIR" "$ORCHD" autopilot 0
 assert_task_status "autopilot task marked as merged" "$INIT_DIR" "autopilot-merge" "merged"
+
+printf '\n[12a] Autopilot wait uses await helper in fast profile\n'
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "fast"
+AUTOPILOT_WAIT_OUT=$(
+	cd "$INIT_DIR" || exit 1
+	ORCHD_LIB_DIR="$(dirname "$ORCHD")/../lib"
+	AWAIT_CAPTURE="$INIT_DIR/.orchd/await_capture.txt"
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/autopilot.sh
+	source "$ORCHD_LIB_DIR/cmd/autopilot.sh"
+	# shellcheck disable=SC2034
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd"
+	# shellcheck disable=SC2034
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	# shellcheck disable=SC2034
+	LOGS_DIR="$ORCHD_DIR/logs"
+	cmd_await() {
+		printf 'await %s %s %s %s %s\n' "$1" "$2" "$3" "$4" "$5" >"$AWAIT_CAPTURE"
+		return 1
+	}
+	_autopilot_wait 2 1
+	cat "$AWAIT_CAPTURE"
+)
+if printf '%s' "$AUTOPILOT_WAIT_OUT" | grep -q '^await --all --poll 1 --timeout 2$'; then
+	pass "autopilot wait uses await"
+else
+	fail "autopilot wait uses await"
+fi
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "balanced"
+
+printf '\n[12b] Fast verification skips redundant build\n'
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "fast"
+set_test_cmd "$INIT_DIR/.orchd.toml" "true"
+set_build_cmd "$INIT_DIR/.orchd.toml" "false"
+FAST_CHECK_WORKTREE="$INIT_DIR/.worktrees/agent-fast-check"
+mkdir -p "$INIT_DIR/.worktrees"
+run_in_dir "$INIT_DIR" git worktree add -q -b "agent-fast-check" "$FAST_CHECK_WORKTREE" "$BASE_BRANCH"
+printf 'fast-check\n' >"$FAST_CHECK_WORKTREE/fast_check.txt"
+run_in_dir "$FAST_CHECK_WORKTREE" git add "fast_check.txt"
+run_in_dir "$FAST_CHECK_WORKTREE" git commit -q -m "test: fast check"
+cat >"$FAST_CHECK_WORKTREE/TASK_REPORT.md" <<'EOF'
+Summary of changes
+- Fast verification fixture.
+
+Files modified/created
+- fast_check.txt
+
+EVIDENCE:
+- CMD: true
+  RESULT: PASS
+  OUTPUT: fixture prepared
+
+Rollback note
+- Roll back if fast verification fixture breaks regression coverage.
+- Revert the fixture commit and remove the task state.
+
+Risks/notes
+- Test fixture only.
+EOF
+mkdir -p "$INIT_DIR/.orchd/tasks/fast-check"
+printf 'running\n' >"$INIT_DIR/.orchd/tasks/fast-check/status"
+printf '%s\n' "$FAST_CHECK_WORKTREE" >"$INIT_DIR/.orchd/tasks/fast-check/worktree"
+printf 'agent-fast-check\n' >"$INIT_DIR/.orchd/tasks/fast-check/branch"
+printf '0\n' >"$INIT_DIR/.orchd/logs/fast-check.exit"
+assert_exit_0 "fast verification skips failing build" run_in_dir "$INIT_DIR" "$ORCHD" check fast-check
+assert_task_status "fast verification task marked done" "$INIT_DIR" "fast-check" "done"
+run_in_dir "$INIT_DIR" git worktree remove --force "$FAST_CHECK_WORKTREE" >/dev/null 2>&1 || true
+set_test_cmd "$INIT_DIR/.orchd.toml" ""
+set_build_cmd "$INIT_DIR/.orchd.toml" ""
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "balanced"
+
+printf '\n[12c] Fast merge skips post-merge tests\n'
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "fast"
+set_test_cmd "$INIT_DIR/.orchd.toml" "false"
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+run_in_dir "$INIT_DIR" git checkout -q -b "agent-fast-merge-skip"
+printf 'fast-merge-skip\n' >"$INIT_DIR/fast_merge_skip.txt"
+run_in_dir "$INIT_DIR" git add "fast_merge_skip.txt"
+run_in_dir "$INIT_DIR" git commit -q -m "test: fast merge skip"
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+mkdir -p "$INIT_DIR/.orchd/tasks/fast-merge-skip"
+printf 'done\n' >"$INIT_DIR/.orchd/tasks/fast-merge-skip/status"
+printf 'agent-fast-merge-skip\n' >"$INIT_DIR/.orchd/tasks/fast-merge-skip/branch"
+assert_exit_0 "fast merge skips post-merge test rerun" run_in_dir "$INIT_DIR" "$ORCHD" merge "fast-merge-skip"
+assert_task_status "fast merge task marked merged" "$INIT_DIR" "fast-merge-skip" "merged"
+set_test_cmd "$INIT_DIR/.orchd.toml" ""
+set_orchestrator_profile "$INIT_DIR/.orchd.toml" "balanced"
 
 printf '\n[13] Merge --all stops after post-merge test failure\n'
 set_test_cmd "$INIT_DIR/.orchd.toml" "false"

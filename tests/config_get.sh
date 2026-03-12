@@ -87,6 +87,37 @@ printf '\n[3] Value parsing\n'
 assert_eq "string value keeps spaces" "my-agent --worktree {worktree} --prompt {prompt}" "$(config_get "custom_runner_cmd" "")"
 assert_eq "numeric value parsed as text" "4" "$(config_get "max_parallel" "")"
 
+cat >"$TMPDIR_CONFIG/.orchd.toml" <<'EOF'
+[project]
+name = "fast-project"
+
+[orchestrator]
+profile = "fast"
+max_parallel = 3
+
+[quality]
+test_cmd = "go test ./..."
+EOF
+
+printf '\n[4] Profile-aware effective config\n'
+assert_eq "orchestrator profile resolves" "fast" "$(orchd_profile)"
+assert_eq "fast profile upgrades legacy max_parallel" "8" "$(config_get_effective_int "max_parallel" "3")"
+assert_eq "fast profile lowers autopilot poll" "2" "$(config_get_effective_int "autopilot_poll" "30")"
+assert_eq "fast profile switches verification profile" "fast" "$(config_get_effective "quality.verification_profile" "strict")"
+assert_eq "fast profile disables post-merge test" "never" "$(config_get_effective "quality.post_merge_test" "always")"
+
+cat >"$TMPDIR_CONFIG/.orchd.toml" <<'EOF'
+[project]
+name = "default-project"
+
+[orchestrator]
+max_parallel = 3
+EOF
+
+printf '\n[5] Default profile is fast\n'
+assert_eq "default profile resolves to fast" "fast" "$(orchd_profile)"
+assert_eq "default fast profile upgrades legacy max_parallel" "8" "$(config_get_effective_int "max_parallel" "3")"
+
 printf '\n=== Results: %d passed, %d failed, %d total ===\n' "$PASS" "$FAIL" "$TOTAL"
 
 if ((FAIL > 0)); then

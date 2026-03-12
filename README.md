@@ -227,6 +227,7 @@ description = "A REST API with authentication"
 base_branch = "main"
 
 [orchestrator]
+profile = "fast"           # safe | balanced | fast
 max_parallel = 3           # max concurrent agents
 worktree_dir = ".worktrees"
 monitor_interval = 30      # monitor daemon tick (legacy)
@@ -239,6 +240,8 @@ runner = "claude"          # or: codex, opencode, aider, custom
 lint_cmd = "npm run lint"  # run during orchd check
 test_cmd = "npm test"      # run during orchd check
 build_cmd = "npm run build"
+# verification_profile = "fast"   # strict | fast
+# post_merge_test = "never"       # always | never
 
 [ideate]
 max_ideas = 5                    # max ideas per ideate call
@@ -261,6 +264,7 @@ max_consecutive_failures = 3       # stop if ideate fails this many times in a r
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `orchestrator.profile` | `fast` | Execution profile: `safe`, `balanced`, or `fast` |
 | `memory_max_chars` | 12000 | Max characters for memory bank context in prompts |
 | `autopilot_poll` | 30 | Poll interval (seconds) in autopilot loop |
 | `autopilot_max_iterations` | 0 | Max autopilot iterations (0 = unlimited) |
@@ -268,8 +272,22 @@ max_consecutive_failures = 3       # stop if ideate fails this many times in a r
 | `autopilot_retry_backoff` | 60 | Base backoff (seconds) between retries |
 | `await_poll` | 5 | Poll interval for `orchd await` |
 | `await_timeout` | 0 | Timeout for `orchd await` (0 = no limit) |
+| `quality.verification_profile` | `strict` | Verification policy for `orchd check` (`strict` or `fast`) |
+| `quality.post_merge_test` | `always` | Post-merge test rerun policy (`always` or `never`) |
 
 If `lint_cmd`, `test_cmd`, or `build_cmd` are left empty, `orchd check` auto-detects commands for Node, Python, Go, Rust, and Java projects.
+
+### Fast Profile
+
+`fast` is now the default profile. Use `balanced` or `safe` only if you want more conservative orchestration.
+
+- `autopilot` reacts faster to finished work by waiting on `orchd await --all`
+- effective parallelism increases to `8` unless you already set a higher/lower custom value
+- retry backoff drops so failed tasks are retried sooner
+- `orchd check` prefers `test_cmd` over rerunning both `test_cmd` and `build_cmd`
+- merge-time post-merge tests are skipped unless you explicitly set `quality.post_merge_test = "always"`
+
+Use this when you want to finish projects quickly with good enough verification at each task, then rely on your final project-level checks before shipping.
 
 ## Project Structure
 

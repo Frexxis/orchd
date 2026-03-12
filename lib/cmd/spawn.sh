@@ -123,7 +123,7 @@ _spawn_single() {
 _spawn_all_ready() {
 	local runner=$1
 	local max_parallel
-	max_parallel=$(config_get "max_parallel" "3")
+	max_parallel=$(config_get_effective_int "max_parallel" "3")
 
 	local spawned=0
 	local skipped=0

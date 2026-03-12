@@ -61,6 +61,7 @@ description = "$safe_description"
 base_branch = "$base_branch"
 
 [orchestrator]
+profile = "fast"
 max_parallel = 3
 worktree_dir = ".worktrees"
 monitor_interval = 30
@@ -73,6 +74,8 @@ runner = "$runner"
 lint_cmd = ""
 test_cmd = ""
 build_cmd = ""
+# verification_profile = "fast"
+# post_merge_test = "never"
 
 [ideate]
 max_ideas = 5

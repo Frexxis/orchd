@@ -143,6 +143,88 @@ config_get_int() {
 	fi
 }
 
+orchd_profile() {
+	local profile
+	profile=$(config_get "orchestrator.profile" "fast")
+	case "$profile" in
+	safe | balanced | fast)
+		printf '%s\n' "$profile"
+		;;
+	*)
+		printf 'balanced\n'
+		;;
+	esac
+}
+
+profile_default_for() {
+	local key=$1
+	local legacy_default=${2:-}
+	local profile
+	profile=$(orchd_profile)
+
+	case "$key:$profile" in
+	max_parallel:fast)
+		printf '8\n'
+		;;
+	autopilot_poll:fast)
+		printf '2\n'
+		;;
+	autopilot_retry_backoff:fast)
+		printf '10\n'
+		;;
+	await_poll:fast)
+		printf '1\n'
+		;;
+	quality.verification_profile:fast)
+		printf 'fast\n'
+		;;
+	quality.post_merge_test:fast)
+		printf 'never\n'
+		;;
+	quality.verification_profile:*)
+		printf 'strict\n'
+		;;
+	quality.post_merge_test:*)
+		printf 'always\n'
+		;;
+	*)
+		printf '%s\n' "$legacy_default"
+		;;
+	esac
+}
+
+config_get_effective() {
+	local key=$1
+	local legacy_default=${2:-}
+	local sentinel="__ORCHD_UNSET__"
+	local raw
+	raw=$(config_get "$key" "$sentinel")
+
+	if [[ "$raw" == "$sentinel" ]]; then
+		profile_default_for "$key" "$legacy_default"
+		return 0
+	fi
+
+	if [[ "$(orchd_profile)" != "balanced" ]] && [[ -n "$legacy_default" ]] && [[ "$raw" == "$legacy_default" ]]; then
+		profile_default_for "$key" "$legacy_default"
+		return 0
+	fi
+
+	printf '%s\n' "$raw"
+}
+
+config_get_effective_int() {
+	local key=$1
+	local legacy_default=${2:-0}
+	local val
+	val=$(config_get_effective "$key" "$legacy_default")
+	if [[ "$val" =~ ^[0-9]+$ ]]; then
+		printf '%s\n' "$val"
+	else
+		printf '%s\n' "$legacy_default"
+	fi
+}
+
 is_truthy() {
 	local v=${1:-}
 	local vl

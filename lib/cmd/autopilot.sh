@@ -84,11 +84,14 @@ EOF
 
 	# Poll interval: arg > config > default 30s
 	if [[ -z "$poll_interval" ]]; then
-		poll_interval=$(config_get "autopilot_poll" "30")
+		poll_interval=$(config_get_effective_int "autopilot_poll" "30")
 	fi
 	if ! [[ "$poll_interval" =~ ^[0-9]+$ ]]; then
 		die "poll interval must be integer seconds: $poll_interval"
 	fi
+
+	local await_poll
+	await_poll=$(config_get_effective_int "await_poll" "5")
 
 	# Used via eval updates in _autopilot_ideate
 	# shellcheck disable=SC2034
@@ -140,7 +143,7 @@ EOF
 	printf '  runner:   %s\n' "$runner"
 	printf '  tasks:    %d\n' "$task_count"
 	printf '  poll:     %ss\n' "$poll_interval"
-	printf '  max_parallel: %s\n\n' "$(config_get "max_parallel" "3")"
+	printf '  max_parallel: %s\n\n' "$(config_get_effective_int "max_parallel" "3")"
 
 	local iteration=0
 	local max_iterations
@@ -289,9 +292,26 @@ EOF
 		fi
 
 		# --- Sleep ---
-		printf '  waiting %ss...\n\n' "$poll_interval"
-		sleep "$poll_interval"
+		_autopilot_wait "$poll_interval" "$await_poll"
 	done
+}
+
+_autopilot_wait() {
+	local poll_interval=${1:-0}
+	local await_poll=${2:-5}
+
+	if ! [[ "$poll_interval" =~ ^[0-9]+$ ]]; then
+		poll_interval=0
+	fi
+	if ! [[ "$await_poll" =~ ^[0-9]+$ ]]; then
+		await_poll=5
+	fi
+	if ((poll_interval <= 0)); then
+		return 0
+	fi
+
+	printf '  waiting up to %ss for task changes...\n\n' "$poll_interval"
+	(cmd_await --all --poll "$await_poll" --timeout "$poll_interval" >/dev/null 2>&1) || true
 }
 
 _autopilot_pid_file() {
@@ -378,7 +398,7 @@ _autopilot_start_daemon() {
 
 	# Poll interval: arg > config > default 30s
 	if [[ -z "$poll_interval" ]]; then
-		poll_interval=$(config_get "autopilot_poll" "30")
+		poll_interval=$(config_get_effective_int "autopilot_poll" "30")
 	fi
 	if ! [[ "$poll_interval" =~ ^[0-9]+$ ]]; then
 		die "poll interval must be integer seconds: $poll_interval"
@@ -493,7 +513,7 @@ _autopilot_retry_failed() {
 	local retry_limit
 	retry_limit=$(config_get "autopilot_retry_limit" "2")
 	local base_backoff
-	base_backoff=$(config_get "autopilot_retry_backoff" "60")
+	base_backoff=$(config_get_effective_int "autopilot_retry_backoff" "60")
 
 	if ! [[ "$retry_limit" =~ ^[0-9]+$ ]]; then
 		retry_limit=2
@@ -601,7 +621,7 @@ _autopilot_spawn_ready() {
 	done <<<"$(task_list_ids)"
 
 	local max_parallel
-	max_parallel=$(config_get "max_parallel" "3")
+	max_parallel=$(config_get_effective_int "max_parallel" "3")
 
 	if ((pending > 0)) && ((running < max_parallel)); then
 		if [[ "$runner" == "none" ]]; then

@@ -66,7 +66,7 @@ _state_text() {
 	local base_branch worktree_dir max_parallel runner
 	base_branch=$(config_get "base_branch" "main")
 	worktree_dir=$(config_get "worktree_dir" ".worktrees")
-	max_parallel=$(config_get "max_parallel" "3")
+	max_parallel=$(config_get_effective_int "max_parallel" "3")
 	runner=$(detect_runner)
 
 	local total=0 pending=0 running=0 done_count=0 merged=0 failed=0 conflict=0 needs_input=0
@@ -132,7 +132,7 @@ _state_json() {
 	local base_branch worktree_dir max_parallel runner
 	base_branch=$(config_get "base_branch" "main")
 	worktree_dir=$(config_get "worktree_dir" ".worktrees")
-	max_parallel=$(config_get "max_parallel" "3")
+	max_parallel=$(config_get_effective_int "max_parallel" "3")
 	runner=$(detect_runner)
 
 	local total=0 pending=0 running=0 done_count=0 merged=0 failed=0 conflict=0 needs_input=0

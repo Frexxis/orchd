@@ -288,6 +288,7 @@ PY
 
 	# 5. Resolve quality commands (task override > config > auto-detect)
 	local lint_cmd test_cmd build_cmd
+	local verification_profile
 	local auto_detect_used=false
 	local task_lint_cmd task_test_cmd task_build_cmd
 
@@ -344,6 +345,12 @@ PY
 				[[ -n "$line" ]] && _check_printf '  [NOTE] %s\n' "$line"
 			done <<<"$ORCHD_DETECTED_NOTES"
 		fi
+	fi
+
+	verification_profile=$(config_get_effective "quality.verification_profile" "strict")
+	if [[ "$verification_profile" == "fast" ]] && [[ -n "$test_cmd" ]] && [[ -n "$build_cmd" ]]; then
+		_check_printf '  [INFO] fast verification active: skipping build because test_cmd is available\n'
+		build_cmd=""
 	fi
 
 	# 6. Run lint command if configured

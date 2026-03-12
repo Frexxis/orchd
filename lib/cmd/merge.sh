@@ -133,8 +133,10 @@ _merge_single() {
 
 	# Run post-merge regression before committing the merge.
 	local test_cmd
+	local post_merge_test
 	test_cmd=$(config_get "test_cmd" "")
-	if [[ -n "$test_cmd" ]]; then
+	post_merge_test=$(config_get_effective "quality.post_merge_test" "always")
+	if [[ -n "$test_cmd" ]] && [[ "$post_merge_test" != "never" ]]; then
 		printf 'running post-merge tests...\n'
 		if (cd "$PROJECT_ROOT" && eval "$test_cmd" >/dev/null 2>&1); then
 			printf '  [PASS] post-merge tests passed\n'
@@ -147,6 +149,9 @@ _merge_single() {
 			task_set "$task_id" "status" "failed"
 			return 1
 		fi
+	elif [[ -n "$test_cmd" ]]; then
+		printf 'skipping post-merge tests (policy: %s)\n' "$post_merge_test"
+		log_event "INFO" "post-merge regression skipped: $task_id (policy=$post_merge_test)"
 	fi
 
 	# Update memory bank. Stage into the merge commit only if it's safe.
