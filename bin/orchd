@@ -52,6 +52,8 @@ source "$ORCHD_LIB_DIR/cmd/refresh_docs.sh"
 source "$ORCHD_LIB_DIR/cmd/resume.sh"
 # shellcheck source=../lib/cmd/autopilot.sh
 source "$ORCHD_LIB_DIR/cmd/autopilot.sh"
+# shellcheck source=../lib/cmd/orchestrate.sh
+source "$ORCHD_LIB_DIR/cmd/orchestrate.sh"
 # shellcheck source=../lib/cmd/state.sh
 source "$ORCHD_LIB_DIR/cmd/state.sh"
 # shellcheck source=../lib/cmd/reconcile.sh
@@ -85,12 +87,20 @@ Orchestration commands:
   orchd check  <task-id> | --all       Run quality gates on tasks
   orchd merge  <task-id> | --all       Merge completed tasks (DAG order)
   orchd resume <task-id> [reason...]    Resume/continue a task in its worktree
-  orchd autopilot [poll_seconds]        Fully autonomous: spawn/check/merge loop
-  orchd autopilot --continuous [poll]   Fully autonomous until project complete
+  orchd orchestrate [poll_seconds]      AI orchestrator loop with system reminders
+  orchd orchestrate --once              Run a single orchestrator turn
+  orchd orchestrate --daemon [poll]     Run orchestrator supervisor in background
+  orchd orchestrate --status            Show orchestrator daemon status
+  orchd orchestrate --stop              Stop orchestrator daemon
+  orchd orchestrate --logs              Tail orchestrator daemon log
+  orchd autopilot [poll_seconds]        Default AI orchestrator supervisor loop
+  orchd autopilot --ai-orchestrated     Explicit AI orchestrator supervisor mode
+  orchd autopilot --deterministic       Legacy deterministic spawn/check/merge loop
+  orchd autopilot --continuous [poll]   Compatibility flag (implicit in AI mode)
   orchd autopilot --daemon [poll]       Run autopilot in background
-  orchd autopilot --status              Show autopilot daemon status
-  orchd autopilot --stop                Stop autopilot daemon
-  orchd autopilot --logs                Tail autopilot daemon log
+  orchd autopilot --status              Show active autopilot daemon status
+  orchd autopilot --stop                Stop active autopilot daemon
+  orchd autopilot --logs                Tail active autopilot daemon log
   orchd doctor [dir]                   Show effective config and auto-detect
   orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR/CLAUDE/OPENCODE/runbook docs
 
@@ -109,7 +119,7 @@ Idea queue:
 
 Fleet management:
   orchd fleet list                     List configured fleet projects
-  orchd fleet autopilot                Start autopilot for all fleet projects
+  orchd fleet autopilot [opts]         Start autopilot for all fleet projects (default AI mode)
   orchd fleet status                   Show fleet autopilot status
   orchd fleet stop                     Stop all fleet autopilot daemons
   orchd fleet brief [hours]            Summary of recent activity (default 24h)
@@ -303,6 +313,9 @@ case "$cmd" in
     ;;
   resume)
     cmd_resume "$@"
+    ;;
+  orchestrate)
+    cmd_orchestrate "$@"
     ;;
   doctor)
     cmd_doctor "$@"

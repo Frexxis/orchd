@@ -65,6 +65,12 @@ max_parallel = 3
 worktree_dir = ".worktrees"
 monitor_interval = 30
 board_refresh = 5
+runner = "auto"
+autopilot_mode = "ai"
+supervisor_poll = 30
+continue_delay = 1
+max_iterations = 0
+max_stagnation = 8
 
 [worker]
 runner = "$runner"
@@ -100,10 +106,19 @@ EOF
 			printf '\n# orchd state (local)\n.orchd/\n.worktrees/\n' >>"$project_dir/.gitignore"
 		fi
 		if ! grep -qx 'TASK_REPORT.md' "$project_dir/.gitignore" 2>/dev/null; then
-			printf '\n# orchd agent artifacts (local)\nTASK_REPORT.md\n.orchd_needs_input.md\nBLOCKER.md\n' >>"$project_dir/.gitignore"
+			printf '\n# orchd agent artifacts (local)\nTASK_REPORT.md\n' >>"$project_dir/.gitignore"
+		fi
+		if ! grep -qx '.orchd_needs_input.json' "$project_dir/.gitignore" 2>/dev/null; then
+			printf '.orchd_needs_input.json\n' >>"$project_dir/.gitignore"
+		fi
+		if ! grep -qx '.orchd_needs_input.md' "$project_dir/.gitignore" 2>/dev/null; then
+			printf '.orchd_needs_input.md\n' >>"$project_dir/.gitignore"
+		fi
+		if ! grep -qx 'BLOCKER.md' "$project_dir/.gitignore" 2>/dev/null; then
+			printf 'BLOCKER.md\n' >>"$project_dir/.gitignore"
 		fi
 	else
-		printf '# orchd state (local)\n.orchd/\n.worktrees/\n\n# orchd agent artifacts (local)\nTASK_REPORT.md\n.orchd_needs_input.md\nBLOCKER.md\n' >"$project_dir/.gitignore"
+		printf '# orchd state (local)\n.orchd/\n.worktrees/\n\n# orchd agent artifacts (local)\nTASK_REPORT.md\n.orchd_needs_input.json\n.orchd_needs_input.md\nBLOCKER.md\n' >"$project_dir/.gitignore"
 	fi
 
 	# Create agent policy docs if missing

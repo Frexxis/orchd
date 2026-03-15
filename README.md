@@ -17,7 +17,7 @@ You: "Build a REST API with auth, tests, and CI"
                     ▼
         ┌───────────────────────┐
         │    orchd plan          │  → AI generates task DAG
-        │    orchd autopilot     │  → fully autonomous loop
+        │    orchd autopilot     │  → supervised AI orchestrator loop (default)
         └───────────────────────┘
                     │
                     ▼
@@ -102,10 +102,16 @@ orchd merge --all
 | `orchd await [--all\|<task>]` | Block until a task changes or an agent exits |
 | `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
 | `orchd merge <task\|--all>` | Merge completed tasks in dependency order |
-| `orchd autopilot [poll_seconds]` | Fully autonomous: spawn/check/merge loop |
-| `orchd autopilot --continuous [poll_seconds]` | Fully autonomous until the project is complete (ideate → plan → execute) |
+| `orchd orchestrate [poll_seconds]` | Supervised AI orchestrator loop with automatic continuation reminders |
+| `orchd orchestrate --once` | Run exactly one orchestrator turn |
+| `orchd orchestrate --daemon [poll_seconds]` | Run supervised AI orchestrator in background |
+| `orchd orchestrate --status\|--stop\|--logs` | Manage the orchestrator supervisor daemon |
+| `orchd autopilot [poll_seconds]` | Default alias for supervised AI orchestrator mode |
+| `orchd autopilot --ai-orchestrated` | Explicit supervised AI orchestrator mode |
+| `orchd autopilot --deterministic` | Legacy deterministic spawn/check/merge loop |
+| `orchd autopilot --continuous [poll_seconds]` | Compatibility flag (implicit in AI mode; still meaningful for deterministic mode) |
 | `orchd autopilot --daemon [poll_seconds]` | Run autopilot in background |
-| `orchd autopilot --daemon --continuous` | Background + continuous ideation |
+| `orchd autopilot --daemon --continuous` | Background + continuous ideation (deterministic mode) |
 | `orchd autopilot --status\|--stop\|--logs` | Manage the autopilot daemon |
 
 ### Memory Bank
@@ -140,7 +146,8 @@ orchd merge --all
 | Command | Description |
 |---------|-------------|
 | `orchd fleet list` | List configured fleet projects |
-| `orchd fleet autopilot [poll_seconds]` | Start autopilot daemon for all fleet projects |
+| `orchd fleet autopilot [poll_seconds]` | Start autopilot daemon for all fleet projects (default AI-supervised mode) |
+| `orchd fleet autopilot --deterministic [poll_seconds]` | Start fleet autopilot in legacy deterministic mode |
 | `orchd fleet status` | Show autopilot status for all projects |
 | `orchd fleet stop` | Stop all fleet autopilot daemons |
 | `orchd fleet brief [hours]` | Summary of recent activity (default 24h) |
@@ -231,6 +238,12 @@ max_parallel = 3           # max concurrent agents
 worktree_dir = ".worktrees"
 monitor_interval = 30      # monitor daemon tick (legacy)
 board_refresh = 5          # orchd board --watch refresh seconds
+runner = "auto"            # orchestrator runner (auto falls back to worker runner)
+autopilot_mode = "ai"      # ai (default) or deterministic
+supervisor_poll = 30       # orchd orchestrate poll interval
+continue_delay = 1         # delay before forced continuation reinvoke
+max_iterations = 0         # 0 = unlimited orchestrator supervisor iterations
+max_stagnation = 8         # stop after this many unchanged orchestrator turns
 
 [worker]
 runner = "claude"          # or: codex, opencode, aider, custom
@@ -262,6 +275,11 @@ max_consecutive_failures = 3       # stop if ideate fails this many times in a r
 | Key | Default | Description |
 |-----|---------|-------------|
 | `memory_max_chars` | 12000 | Max characters for memory bank context in prompts |
+| `orchestrator.autopilot_mode` | ai | Default autopilot engine (`ai` or `deterministic`) |
+| `orchestrator.supervisor_poll` | 30 | Poll interval (seconds) for supervised AI orchestrator loop |
+| `orchestrator.continue_delay` | 1 | Delay (seconds) before forced continuation reinvoke |
+| `orchestrator.max_iterations` | 0 | Max supervisor iterations (0 = unlimited) |
+| `orchestrator.max_stagnation` | 8 | Stop after this many unchanged orchestrator turns |
 | `autopilot_poll` | 30 | Poll interval (seconds) in autopilot loop |
 | `autopilot_max_iterations` | 0 | Max autopilot iterations (0 = unlimited) |
 | `autopilot_retry_limit` | 2 | Max retries per failed task |
@@ -287,7 +305,8 @@ orchd/
 │       ├── board.sh               # orchd board (live TUI dashboard)
 │       ├── check.sh               # orchd check (quality gates)
 │       ├── merge.sh               # orchd merge (DAG-ordered integration)
-│       ├── autopilot.sh           # orchd autopilot (autonomous loop + queue drain)
+│       ├── orchestrate.sh         # orchd orchestrate (supervised AI orchestrator)
+│       ├── autopilot.sh           # orchd autopilot (AI default + deterministic compatibility)
 │       ├── resume.sh              # orchd resume (continuation)
 │       ├── state.sh               # orchd state (task state snapshot)
 │       ├── await.sh               # orchd await (block until task/agent change)
@@ -302,7 +321,8 @@ orchd/
 │   ├── kickoff.prompt             # Prompt template for agent kickoff
 │   ├── continue.prompt            # Prompt template for task continuation
 │   ├── review.prompt              # Prompt template for review-only tasks
-│   └── ideate.prompt              # Prompt template for ideation
+│   ├── ideate.prompt              # Prompt template for ideation
+│   └── orchestrator.prompt        # Prompt template for supervised AI orchestrator turns
 ├── AGENTS.md                      # Shared agent rules + role routing
 ├── ORCHESTRATOR.md                # Orchestrator-specific rules
 ├── WORKER.md                      # Task agent rules
@@ -326,19 +346,21 @@ Core principles, roles, agent CLI standards, prompt contracts, launch sequences,
 
 ## How orchd Works Internally
 
-1. **`orchd plan`** sends your project description to an AI runner with a structured prompt template. The AI returns a task DAG (dependency graph). orchd parses this into individual task state files under `.orchd/tasks/`.
+1. **`orchd plan`** sends your project description to an AI runner with a structured prompt template. The AI returns a task DAG (dependency graph). orchd parses this into individual task state files under `.orchd/tasks/`. In addition to quality overrides (`LINT_CMD`/`TEST_CMD`/`BUILD_CMD`), plans can optionally include worker execution flags (`EXECUTION_ONLY`, `NO_PLANNING`, `COMMIT_REQUIRED`).
 
 2. **`orchd spawn`** reads the DAG, finds tasks whose dependencies are satisfied, creates a git worktree + branch (`agent-<task-id>`) for each, builds a kickoff prompt from the template, and launches the AI agent in a tmux session.
 
 3. **`orchd board`** reads task state files and checks tmux sessions to show a live dashboard with status, progress bar, and agent health.
 
-4. **`orchd check`** verifies each task: agent exited, commits exist on branch, TASK_REPORT.md present with evidence and rollback note, lint/test/build pass. Tasks that pass are marked `done`. Tasks that fail are marked `failed`. If the agent writes `.orchd_needs_input.md` (or legacy `BLOCKER.md`), the task is marked `needs_input`.
+4. **`orchd check`** verifies each task: agent exited, commits exist on branch, TASK_REPORT.md present with evidence and rollback note, lint/test/build pass. Tasks that pass are marked `done`. Tasks that fail are marked `failed`. If the agent writes `.orchd_needs_input.json` (preferred) or `.orchd_needs_input.md` (legacy), the task is marked `needs_input` with structured metadata.
 
 5. **`orchd merge`** performs topological sort on the DAG and merges `done` tasks into the base branch in dependency order. Post-merge regression tests run before marking a task as `merged`. If a merge conflicts, the task is marked `conflict` until you resolve and retry.
 
-6. **`orchd resume`** re-launches an agent for an existing task/worktree with a continuation prompt (useful after a failed check).
+6. **`orchd resume`** re-launches an agent for an existing task/worktree with a continuation prompt (useful after a failed check), while preserving task-specific execution mode flags.
 
-7. **`orchd autopilot`** combines all of the above: spawn ready tasks, poll until agents finish, check quality gates, retry failed tasks (bounded + backoff), merge in DAG order, spawn newly unblocked tasks. When all tasks reach a terminal state (`merged`/`failed`/`needs_input`/`conflict`) or deadlock, it drains the idea queue. With `--continuous`, it then runs `orchd ideate` to generate new work until the AI outputs `PROJECT_COMPLETE`.
+7. **`orchd orchestrate`** runs an AI orchestrator under supervisor control. If the orchestrator stops before the project reaches a terminal state, orchd automatically rebuilds context, injects a system reminder, and reinvokes it. If workers are running, the supervisor handles `orchd await --all` and resumes the orchestrator when state changes.
+
+8. **`orchd autopilot`** defaults to the supervised AI orchestrator engine (same behavior as `orchd orchestrate`), so if the orchestrator stops early, orchd reinvokes it with a system reminder until terminal state. Use `orchd autopilot --deterministic` for the legacy deterministic spawn/check/merge loop.
 
 ## Memory Bank
 
@@ -375,22 +397,21 @@ orchd idea "add rate limiting to the API"
 orchd idea "write integration tests for auth flow"
 orchd idea "add OpenAPI spec generation"
 
-# Start autopilot — it will plan and execute tasks,
-# then pop the next idea, run orchd plan, and continue
+# Start autopilot (default AI-supervised mode)
 orchd autopilot
 
-# Fully autonomous mode (no human idea entry):
-# when the queue is empty, orchd will ideate new work from docs/memory
-orchd autopilot --continuous
+# Deterministic queue-drain mode:
+# explicit legacy behavior with built-in ideate/plan/execute cycling
+orchd autopilot --deterministic --continuous
 ```
 
 **How it works:**
 
 1. `orchd idea "..."` appends a line to `.orchd/queue.md` with `- [ ]` (pending) status.
-2. When `orchd autopilot` reaches a terminal state (all tasks merged/failed/needs_input/conflict), it calls the queue drain.
-3. The drain pops the next pending idea (marks it `[>]` in-progress), runs `orchd plan "$idea"` to generate a fresh task DAG, and restarts the autopilot loop.
+2. In deterministic mode (`orchd autopilot --deterministic`), when autopilot reaches a terminal state (all tasks merged/failed/needs_input/conflict), it calls the queue drain.
+3. The drain pops the next pending idea (marks it `[>]` in-progress), runs `orchd plan "$idea"` to generate a fresh task DAG, and restarts the deterministic loop.
 4. When that idea's tasks complete, the idea is marked `[x]` (done) and the next one is popped.
-5. This continues until the queue is empty. With `orchd autopilot --continuous`, orchd runs `orchd ideate` to generate the next backlog. When the AI outputs `PROJECT_COMPLETE`, autopilot stops.
+5. In deterministic continuous mode (`--deterministic --continuous`), orchd runs `orchd ideate` to generate the next backlog. When the AI outputs `PROJECT_COMPLETE`, autopilot stops.
 
 Ideas keep a full audit trail in `queue.md` — you can see which ideas were completed, which are in-progress, and which are still pending. If no AI runner is available, queue drain is skipped and ideas are preserved.
 
@@ -411,8 +432,8 @@ path = "/home/user/projects/documentation"
 
 **Commands:**
 
-- `orchd fleet autopilot [poll_seconds]` — starts a background autopilot daemon for each valid orchd project. Each project runs independently with its own log file (`.orchd/autopilot.log`) and PID file (`.orchd/autopilot.pid`).
-- `orchd fleet status` — shows a table with autopilot state, task progress (merged/total), and running/failed counts per project.
+- `orchd fleet autopilot [poll_seconds]` — starts a background autopilot daemon for each valid orchd project using that project's autopilot mode (default: AI-supervised). Supports `--ai-orchestrated`, `--deterministic`, and `--continuous`.
+- `orchd fleet status` — shows a table with autopilot state, selected mode (ai/deterministic), task progress (merged/total), and running/failed counts per project.
 - `orchd fleet stop` — sends SIGTERM to all running fleet daemons.
 - `orchd fleet brief [hours]` — summarizes recent activity across all projects by parsing `orchd.log` and reading task state. Defaults to last 24 hours. Shows merged/failed/needs_input counts, autopilot status, and pending queue depth per project.
 
