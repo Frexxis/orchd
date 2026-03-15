@@ -110,6 +110,8 @@ orchd orchestrate --daemon 30
 
 This keeps an AI orchestrator alive under supervisor control. If the agent stops before the project reaches a terminal state, orchd rebuilds state, injects a system reminder, and reinvokes it.
 
+With `opencode`, set `orchestrator.session_mode = "sticky"` (or keep `auto`) to inject reminders into the same live session (oh-my-openagent-style continuation).
+
 For a deterministic built-in loop, use autopilot's deterministic engine explicitly:
 
 ```bash

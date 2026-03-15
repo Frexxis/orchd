@@ -22,6 +22,7 @@ notes:
   - runs an AI orchestrator under supervisor control
   - automatically reinvokes the orchestrator with a system reminder until terminal state
   - waiting on workers is handled by the supervisor, not by the orchestrator agent itself
+  - with opencode and session_mode=sticky, reminders are injected into the same live session
 EOF
 			return 0
 			;;
@@ -97,7 +98,24 @@ EOF
 	max_iterations=$(config_get_int "orchestrator.max_iterations" "0")
 	max_stagnation=$(config_get_int "orchestrator.max_stagnation" "8")
 
+	local session_mode idle_timeout reminder_cooldown max_reminders fallback_on_inject_failure
+	session_mode=$(config_get "orchestrator.session_mode" "auto")
+	idle_timeout=$(config_get_int "orchestrator.idle_timeout" "45")
+	reminder_cooldown=$(config_get_int "orchestrator.reminder_cooldown" "20")
+	max_reminders=$(config_get_int "orchestrator.max_reminders" "8")
+	fallback_on_inject_failure=$(config_get "orchestrator.fallback_on_inject_failure" "true")
+
 	rm -f "$(_orchestrate_stop_file)" 2>/dev/null || true
+	if _orchestrate_use_sticky_session "$runner" "$session_mode" "$once"; then
+		_orchestrate_loop_sticky "$runner" "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$idle_timeout" "$reminder_cooldown" "$max_reminders" "$fallback_on_inject_failure"
+		local sticky_rc=$?
+		if ((sticky_rc == 93)); then
+			log_event "WARN" "sticky orchestrator loop requested fallback to classic supervisor loop"
+			_orchestrate_loop "$runner" "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$once"
+			return $?
+		fi
+		return $sticky_rc
+	fi
 	_orchestrate_loop "$runner" "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$once"
 }
 
@@ -140,6 +158,39 @@ _orchestrate_history_file() {
 	printf '%s/history.log\n' "$(_orchestrate_state_dir)"
 }
 
+_orchestrate_session_name_file() {
+	printf '%s/session_name\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_session_mode_file() {
+	printf '%s/session_mode\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_use_sticky_session() {
+	local runner=$1
+	local session_mode=$2
+	local once=$3
+
+	[[ "$once" == "false" ]] || return 1
+
+	local mode
+	mode=$(printf '%s' "$session_mode" | tr '[:upper:]' '[:lower:]')
+	case "$mode" in
+	sticky)
+		[[ "$runner" == "opencode" ]]
+		;;
+	auto | "")
+		[[ "$runner" == "opencode" ]]
+		;;
+	classic | reinvoke | one-shot)
+		return 1
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
 _orchestrate_prepare_dir() {
 	mkdir -p "$(_orchestrate_state_dir)" "$(_orchestrate_iteration_dir)"
 }
@@ -159,6 +210,11 @@ _orchestrate_status() {
 		pid=$(cat "$(_orchestrate_pid_file)" 2>/dev/null || true)
 		printf 'orchestrator supervisor: running (pid %s)\n' "$pid"
 		printf 'log: %s\n' "$(_orchestrate_log_file)"
+		local sticky_session=""
+		sticky_session=$(cat "$(_orchestrate_session_name_file)" 2>/dev/null || true)
+		if [[ -n "$sticky_session" ]] && tmux has-session -t "$sticky_session" 2>/dev/null; then
+			printf 'sticky session: %s\n' "$sticky_session"
+		fi
 		return 0
 	fi
 	if [[ -f "$(_orchestrate_pid_file)" ]]; then
@@ -172,6 +228,12 @@ _orchestrate_status() {
 _orchestrate_stop() {
 	_orchestrate_prepare_dir
 	: >"$(_orchestrate_stop_file)"
+	local sticky_session=""
+	sticky_session=$(cat "$(_orchestrate_session_name_file)" 2>/dev/null || true)
+	if [[ -n "$sticky_session" ]] && tmux has-session -t "$sticky_session" 2>/dev/null; then
+		tmux kill-session -t "$sticky_session" >/dev/null 2>&1 || true
+		printf 'orchestrator sticky session stopped (%s)\n' "$sticky_session"
+	fi
 	if _orchestrate_is_running; then
 		local pid
 		pid=$(cat "$(_orchestrate_pid_file)" 2>/dev/null || true)
@@ -462,6 +524,266 @@ _orchestrate_invoke_runner() {
 		;;
 	esac
 	return 0
+}
+
+_orchestrate_sticky_session_name() {
+	local hash
+	hash=$(printf '%s' "$PROJECT_ROOT" | git hash-object --stdin)
+	printf 'orchd-orchestrator-%s\n' "${hash:0:10}"
+}
+
+_orchestrate_sticky_start_session() {
+	local session_name=$1
+	if tmux has-session -t "$session_name" 2>/dev/null; then
+		return 0
+	fi
+	tmux new -d -s "$session_name" "cd $(printf '%q' "$PROJECT_ROOT") && opencode" || return 1
+	sleep 1
+	return 0
+}
+
+_orchestrate_tmux_send_text() {
+	local session_name=$1
+	local text=$2
+	local stamp
+	stamp=$(date +%s)
+	local msg_file="$(_orchestrate_state_dir)/inject-${stamp}.txt"
+	local buf_name="orchd-orchestrator-${stamp}"
+	printf '%s\n' "$text" >"$msg_file"
+	tmux load-buffer -b "$buf_name" "$msg_file" || return 1
+	tmux paste-buffer -b "$buf_name" -t "$session_name" || return 1
+	tmux send-keys -t "$session_name" Enter || return 1
+	tmux delete-buffer -b "$buf_name" >/dev/null 2>&1 || true
+	rm -f "$msg_file" >/dev/null 2>&1 || true
+	return 0
+}
+
+_orchestrate_sticky_capture_output() {
+	local session_name=$1
+	local out_file=$2
+	tmux capture-pane -p -J -S -1600 -t "$session_name" >"$out_file" 2>/dev/null
+}
+
+_orchestrate_loop_sticky() {
+	local runner=$1
+	local poll_interval=$2
+	local continue_delay=$3
+	local max_iterations=$4
+	local max_stagnation=$5
+	local idle_timeout=$6
+	local reminder_cooldown=$7
+	local max_reminders=$8
+	local fallback_on_inject_failure=$9
+
+	if [[ "$runner" != "opencode" ]]; then
+		return 93
+	fi
+
+	local fallback_enabled=true
+	if ! is_truthy "$fallback_on_inject_failure"; then
+		fallback_enabled=false
+	fi
+
+	local session_name
+	session_name=$(_orchestrate_sticky_session_name)
+	printf '%s\n' "$session_name" >"$(_orchestrate_session_name_file)"
+	printf 'sticky\n' >"$(_orchestrate_session_mode_file)"
+
+	local iteration=0
+	local reminder_count=0
+	local reason="startup"
+	local should_inject=true
+	local last_output_hash=""
+	local last_fingerprint=""
+	local last_state_fingerprint=""
+	local stagnation=0
+	local last_reminder_epoch=0
+	local last_activity_epoch
+	last_activity_epoch=$(date +%s)
+
+	log_event "INFO" "orchestrator sticky supervisor started (runner=$runner poll=${poll_interval}s session=$session_name)"
+	printf 'orchestrator sticky supervisor started\n'
+	printf '  runner: %s\n' "$runner"
+	printf '  poll:   %ss\n' "$poll_interval"
+	printf '  mode:   sticky-session\n'
+	printf '  tmux:   %s\n\n' "$session_name"
+
+	while true; do
+		if [[ -f "$(_orchestrate_stop_file)" ]]; then
+			log_event "INFO" "orchestrator sticky supervisor stop file detected"
+			printf 'orchestrator sticky supervisor stopped\n'
+			return 0
+		fi
+
+		if [[ "$should_inject" == "true" ]]; then
+			iteration=$((iteration + 1))
+			printf '%s\n' "$iteration" >"$(_orchestrate_state_dir)/iteration"
+			if ((max_iterations > 0)) && ((iteration > max_iterations)); then
+				log_event "WARN" "orchestrator sticky iteration limit reached ($max_iterations)"
+				printf 'orchestrator reached iteration limit (%d)\n' "$max_iterations"
+				return 1
+			fi
+
+			_orchestrate_collect_state
+			local pre_summary pre_state_json prompt
+			pre_summary=$(_orchestrate_state_summary)
+			pre_state_json=$(cmd_state --json)
+			printf '%s\n' "$pre_state_json" >"$(_orchestrate_state_dir)/current_state.json"
+			prompt=$(_build_orchestrator_prompt "$iteration" "$reason" "$pre_summary" "$pre_state_json")
+
+			local prefix prompt_file
+			prefix=$(printf '%04d' "$iteration")
+			prompt_file="$(_orchestrate_iteration_dir)/${prefix}.prompt.txt"
+			printf '%s\n' "$prompt" >"$prompt_file"
+			cp "$prompt_file" "$(_orchestrate_state_dir)/last_prompt.txt"
+
+			if ! _orchestrate_sticky_start_session "$session_name"; then
+				if [[ "$fallback_enabled" == "true" ]]; then
+					log_event "WARN" "sticky orchestrator failed to start session; falling back"
+					return 93
+				fi
+				return 1
+			fi
+
+			printf '[%s] sticky orchestrator inject %d - %s\n' "$(now_iso)" "$iteration" "$reason"
+			_orchestrate_history_append "sticky iteration=$iteration reason=$reason before=$pre_summary"
+
+			if ! _orchestrate_tmux_send_text "$session_name" "$prompt"; then
+				if [[ "$fallback_enabled" == "true" ]]; then
+					log_event "WARN" "sticky orchestrator reminder injection failed; falling back"
+					return 93
+				fi
+				return 1
+			fi
+
+			if [[ "$reason" != "startup" ]]; then
+				reminder_count=$((reminder_count + 1))
+				printf '%s\n' "$reminder_count" >"$(_orchestrate_state_dir)/reminder_count"
+				if ((max_reminders > 0)) && ((reminder_count > max_reminders)); then
+					if [[ "$fallback_enabled" == "true" ]]; then
+						log_event "WARN" "sticky orchestrator max reminders reached; falling back"
+						return 93
+					fi
+					log_event "ERROR" "sticky orchestrator max reminders reached"
+					return 1
+				fi
+			fi
+
+			last_reminder_epoch=$(date +%s)
+			should_inject=false
+			reason=""
+			if ((continue_delay > 0)); then
+				sleep "$continue_delay"
+			fi
+		fi
+
+		if ! tmux has-session -t "$session_name" 2>/dev/null; then
+			reason="system reminder: orchestrator session exited unexpectedly. Continue from current state."
+			should_inject=true
+			continue
+		fi
+
+		local out_file
+		out_file="$(_orchestrate_iteration_dir)/sticky-live.out.txt"
+		if ! _orchestrate_sticky_capture_output "$session_name" "$out_file"; then
+			sleep "$poll_interval"
+			continue
+		fi
+		cp "$out_file" "$(_orchestrate_state_dir)/last_output.txt"
+
+		local output_hash now_epoch idle_secs
+		output_hash=$(git hash-object "$out_file")
+		now_epoch=$(date +%s)
+		if [[ "$output_hash" != "$last_output_hash" ]]; then
+			last_output_hash="$output_hash"
+			last_activity_epoch="$now_epoch"
+			printf '%s\n' "$last_activity_epoch" >"$(_orchestrate_state_dir)/last_activity_epoch"
+		fi
+		idle_secs=$((now_epoch - last_activity_epoch))
+
+		_orchestrate_parse_result "$out_file"
+		local result result_reason passive_stop=false
+		result="$ORCHD_ORCH_RESULT"
+		result_reason="$ORCHD_ORCH_REASON"
+		if _orchestrate_passive_stop_detected "$out_file"; then
+			passive_stop=true
+		fi
+
+		_orchestrate_collect_state
+		local post_summary post_state_json state_fingerprint combined_fingerprint
+		post_summary=$(_orchestrate_state_summary)
+		post_state_json=$(cmd_state --json)
+		printf '%s\n' "$post_state_json" >"$(_orchestrate_state_dir)/current_state.json"
+		printf '%s\n' "$result" >"$(_orchestrate_state_dir)/last_result"
+		printf '%s\n' "$result_reason" >"$(_orchestrate_state_dir)/last_reason"
+		state_fingerprint=$(printf '%s' "$post_state_json" | git hash-object --stdin)
+		combined_fingerprint=$(printf '%s|%s' "$state_fingerprint" "$output_hash" | git hash-object --stdin)
+
+		if [[ -n "$last_fingerprint" ]] && [[ "$combined_fingerprint" == "$last_fingerprint" ]]; then
+			stagnation=$((stagnation + 1))
+		else
+			stagnation=0
+		fi
+		last_fingerprint="$combined_fingerprint"
+		printf '%s\n' "$stagnation" >"$(_orchestrate_state_dir)/stagnation_count"
+
+		if [[ "$result" == "NEEDS_INPUT" ]]; then
+			log_event "WARN" "orchestrator reported needs_input: ${result_reason:-no reason given}"
+			printf 'orchestrator needs input: %s\n' "$result_reason"
+			return 2
+		fi
+
+		if [[ "$result" == "PROJECT_COMPLETE" ]] && _orchestrate_completion_eligible; then
+			log_event "INFO" "orchestrator completed project"
+			printf 'project complete (orchestrator)\n'
+			return 0
+		fi
+
+		if ((stagnation >= max_stagnation)); then
+			if [[ "$fallback_enabled" == "true" ]]; then
+				log_event "WARN" "sticky orchestrator stagnated; falling back"
+				return 93
+			fi
+			log_event "ERROR" "sticky orchestrator stalled after $stagnation unchanged cycles"
+			printf 'orchestrator stalled after %d unchanged cycles\n' "$stagnation"
+			return 1
+		fi
+
+		local cooldown_ok=false
+		if ((now_epoch - last_reminder_epoch >= reminder_cooldown)); then
+			cooldown_ok=true
+		fi
+
+		if ((ORCH_STATE_RUNNING > 0)); then
+			local wait_output=""
+			if wait_output=$(cmd_await --all --json --timeout "$poll_interval"); then
+				printf '%s\n' "$wait_output" >"$(_orchestrate_state_dir)/last_wait.json"
+				local wait_event
+				wait_event=$(printf '%s' "$wait_output" | awk -F '"' '/"event":/ { print $4; exit }')
+				reason="system reminder: worker state changed (${wait_event:-action_required}). Re-read orchd state and continue orchestration."
+				should_inject=true
+				continue
+			fi
+		fi
+
+		if [[ "$cooldown_ok" == "true" ]]; then
+			if [[ -n "$last_state_fingerprint" ]] && [[ "$state_fingerprint" != "$last_state_fingerprint" ]]; then
+				reason="system reminder: orchd state changed. Re-read state and continue orchestration. Current summary: $post_summary"
+				should_inject=true
+				last_state_fingerprint="$state_fingerprint"
+				continue
+			fi
+			if ((idle_secs >= idle_timeout)); then
+				reason=$(_orchestrate_next_reason "$result" "$result_reason" "$passive_stop" "$post_summary")
+				should_inject=true
+				last_state_fingerprint="$state_fingerprint"
+				continue
+			fi
+		fi
+
+		last_state_fingerprint="$state_fingerprint"
+		sleep "$poll_interval"
+	done
 }
 
 _orchestrate_loop() {

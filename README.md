@@ -244,6 +244,11 @@ supervisor_poll = 30       # orchd orchestrate poll interval
 continue_delay = 1         # delay before forced continuation reinvoke
 max_iterations = 0         # 0 = unlimited orchestrator supervisor iterations
 max_stagnation = 8         # stop after this many unchanged orchestrator turns
+session_mode = "auto"      # auto/sticky/reinvoke (sticky applies to opencode)
+idle_timeout = 45          # sticky mode: idle seconds before reminder injection
+reminder_cooldown = 20     # sticky mode: minimum seconds between reminders
+max_reminders = 8          # sticky mode: max injected reminders before fallback
+fallback_on_inject_failure = true # sticky mode: fallback to re-invoke loop on inject failures
 
 [worker]
 runner = "claude"          # or: codex, opencode, aider, custom
@@ -280,6 +285,11 @@ max_consecutive_failures = 3       # stop if ideate fails this many times in a r
 | `orchestrator.continue_delay` | 1 | Delay (seconds) before forced continuation reinvoke |
 | `orchestrator.max_iterations` | 0 | Max supervisor iterations (0 = unlimited) |
 | `orchestrator.max_stagnation` | 8 | Stop after this many unchanged orchestrator turns |
+| `orchestrator.session_mode` | auto | `auto`/`sticky`/`reinvoke`; sticky keeps same opencode session |
+| `orchestrator.idle_timeout` | 45 | Sticky mode idle threshold before injecting reminder |
+| `orchestrator.reminder_cooldown` | 20 | Sticky mode minimum seconds between reminders |
+| `orchestrator.max_reminders` | 8 | Sticky mode max reminder injections before fallback |
+| `orchestrator.fallback_on_inject_failure` | true | If sticky injection fails, fallback to classic reinvoke loop |
 | `autopilot_poll` | 30 | Poll interval (seconds) in autopilot loop |
 | `autopilot_max_iterations` | 0 | Max autopilot iterations (0 = unlimited) |
 | `autopilot_retry_limit` | 2 | Max retries per failed task |

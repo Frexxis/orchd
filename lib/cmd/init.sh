@@ -71,6 +71,11 @@ supervisor_poll = 30
 continue_delay = 1
 max_iterations = 0
 max_stagnation = 8
+session_mode = "auto"
+idle_timeout = 45
+reminder_cooldown = 20
+max_reminders = 8
+fallback_on_inject_failure = true
 
 [worker]
 runner = "$runner"
