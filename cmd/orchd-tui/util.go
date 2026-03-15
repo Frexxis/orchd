@@ -13,6 +13,8 @@ func statusASCII(status string) string {
 		return "[x]"
 	case "running":
 		return "[>]"
+	case "stale":
+		return "[~]"
 	case "pending":
 		return "[ ]"
 	case "failed":

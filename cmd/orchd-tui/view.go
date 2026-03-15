@@ -150,7 +150,7 @@ func (m model) viewBody() string {
 		}
 		rightTitle := "Task Detail"
 		if t := m.selectedTask(); t != nil {
-			rightTitle = fmt.Sprintf("%s %s", t.ID, (&m).statusChip(t.Status))
+			rightTitle = fmt.Sprintf("%s %s", t.ID, (&m).statusChip((&m).taskDisplayStatus(*t)))
 		}
 		right := m.renderPanel(rightTitle, rightContent, rightW, bodyH, m.focusPane == 1)
 		return lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)
@@ -330,12 +330,13 @@ func (m model) renderTaskList(height int, width int) string {
 	}
 	for i := start; i < end; i++ {
 		t := m.state.Tasks[i]
-		chip := m.statusChip(t.Status)
+		displayStatus := m.taskDisplayStatus(t)
+		chip := m.statusChip(displayStatus)
 		role := t.Role
 		if strings.TrimSpace(role) == "" {
 			role = "-"
 		}
-		line := fmt.Sprintf("%s %-*s %-*s %s", statusASCII(t.Status), idW, truncate(t.ID, idW), roleW, truncate(role, roleW), chip)
+		line := fmt.Sprintf("%s %-*s %-*s %s", statusASCII(displayStatus), idW, truncate(t.ID, idW), roleW, truncate(role, roleW), chip)
 		if i == m.selectedTaskIdx {
 			line = m.styles.TaskSelected.Render(line)
 		} else {

@@ -24,12 +24,21 @@ Reason: {resume_reason}
 
 {acceptance_criteria}
 
+## Execution Mode
+
+- execution_only: {execution_only}
+- no_planning: {no_planning}
+- commit_required: {commit_required}
+
+{execution_mode_instructions}
+
 ## Rules
 
 - Work ONLY within your worktree: {worktree_path}
 - Do not merge into main — the orchestrator handles merges.
 - Do not log or commit PII, tokens, or API keys.
-- If you need user input (credentials, decisions, missing requirements), write it to `.orchd_needs_input.md` at the worktree root and exit.
+- If you need user input (credentials, decisions, missing requirements), write a structured payload to `.orchd_needs_input.json` with keys `code`, `summary`, `question`, `blocking`, `options`, then exit.
+- You may also add `.orchd_needs_input.md` for extra context.
 - Otherwise: fix issues, run relevant checks, commit, and write TASK_REPORT.md.
 
 ## TASK_REPORT.md (Required)

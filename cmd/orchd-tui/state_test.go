@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,8 +78,73 @@ func TestStatusASCII(t *testing.T) {
 	if got := statusASCII("running"); got != "[>]" {
 		t.Fatalf("running icon = %q want [>]", got)
 	}
+	if got := statusASCII("stale"); got != "[~]" {
+		t.Fatalf("stale icon = %q want [~]", got)
+	}
 	if got := statusASCII("unknown-value"); got != "[-]" {
 		t.Fatalf("unknown icon = %q want [-]", got)
+	}
+}
+
+func TestStateJSONUnmarshalIncludesNeedsInput(t *testing.T) {
+	raw := `{
+		"project_root": "/tmp/demo",
+		"base_branch": "main",
+		"worktree_dir": ".worktrees",
+		"worker_runner": "codex",
+		"max_parallel": 3,
+		"counts": {"total":1,"pending":0,"running":0,"done":0,"merged":0,"failed":0,"conflict":0,"needs_input":1},
+		"ready": {"spawn":0,"check":0,"merge":0},
+		"tasks": [{
+			"id": "t1",
+			"title": "Need decision",
+			"role": "domain",
+			"status": "needs_input",
+			"effective_status": "needs_input",
+			"deps": "",
+			"branch": "agent-t1",
+			"worktree": "/tmp/demo/.worktrees/agent-t1",
+			"runner": "codex",
+			"session": "orchd-agent-t1",
+			"session_state": "stale",
+			"agent_alive": false,
+			"attempts": 1,
+			"checked_at": "",
+			"merged_at": "",
+			"last_failure_reason": "",
+			"log_file": "/tmp/demo/.orchd/logs/t1.jsonl",
+			"needs_input": {
+				"source": "json",
+				"file": "/tmp/demo/.worktrees/agent-t1/.orchd_needs_input.json",
+				"code": "decision_required",
+				"summary": "Need a product decision",
+				"question": "Provider A or B?",
+				"blocking": "true",
+				"options": "provider_a | provider_b",
+				"error": ""
+			}
+		}]
+	}`
+
+	var st orchState
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		t.Fatalf("unmarshal state json: %v", err)
+	}
+	if len(st.Tasks) != 1 {
+		t.Fatalf("len(tasks)=%d want=1", len(st.Tasks))
+	}
+	task := st.Tasks[0]
+	if task.EffectiveStatus != "needs_input" {
+		t.Fatalf("effective status=%q want needs_input", task.EffectiveStatus)
+	}
+	if task.SessionState != "stale" {
+		t.Fatalf("session state=%q want stale", task.SessionState)
+	}
+	if task.NeedsInput == nil {
+		t.Fatalf("needs_input payload should be present")
+	}
+	if task.NeedsInput.Code != "decision_required" {
+		t.Fatalf("needs_input code=%q want decision_required", task.NeedsInput.Code)
 	}
 }
 

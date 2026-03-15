@@ -25,6 +25,7 @@ notes:
   - marks tasks as merged if their branch is already an ancestor of base_branch
   - clears missing worktree paths
   - reports stale running tasks (agent exited) so you can run `orchd check`
+  - cleans stale live tmux sessions for terminal task states
 EOF
 			return 0
 			;;
@@ -48,9 +49,11 @@ EOF
 		[[ -z "$task_id" ]] && continue
 
 		local status branch worktree
-		status=$(task_status "$task_id")
+		task_runtime_refresh "$task_id"
+		status="$TASK_RUNTIME_STATUS"
 		branch=$(task_get "$task_id" "branch" "agent-${task_id}")
 		worktree=$(task_get "$task_id" "worktree" "")
+		local session_alive="$TASK_RUNTIME_SESSION_PRESENT"
 
 		# Clear missing worktree references (common after manual cleanup).
 		if [[ -n "$worktree" ]] && [[ ! -d "$worktree" ]]; then
@@ -82,13 +85,31 @@ EOF
 		fi
 
 		# Stale running tasks: agent session exited but status still running.
-		if [[ "$status" == "running" ]] && ! runner_is_alive "$task_id"; then
+		if [[ "$status" == "failed" || "$status" == "done" || "$status" == "merged" || "$status" == "conflict" || "$status" == "needs_input" ]]; then
+			if $session_alive; then
+				reports+="- $task_id: stale live session in terminal state ($status) -> stopping session"$'\n'
+				if ! $dry_run; then
+					runner_stop "$task_id"
+				fi
+				changed=$((changed + 1))
+			fi
+		fi
+
+		# Stale running tasks: agent session exited but status still running.
+		if [[ "$status" == "running" ]] && [[ "$TASK_RUNTIME_AGENT_ALIVE" != "true" ]]; then
 			local exit_code
 			exit_code=$(runner_exit_code "$task_id" 2>/dev/null || true)
 			if [[ -n "$exit_code" ]]; then
 				reports+="- $task_id: agent exited (exit=$exit_code) -> run: orchd check $task_id"$'\n'
 			else
 				reports+="- $task_id: agent session not alive and exit unknown (missing marker)"$'\n'
+			fi
+			if $session_alive; then
+				reports+="- $task_id: stale running session shell detected -> stopping session"$'\n'
+				if ! $dry_run; then
+					runner_stop "$task_id"
+				fi
+				changed=$((changed + 1))
 			fi
 		fi
 	done <<<"$(task_list_ids)"

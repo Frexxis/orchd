@@ -51,22 +51,36 @@ type readyCounts struct {
 }
 
 type taskState struct {
-	ID                string   `json:"id"`
-	Title             string   `json:"title"`
-	Role              string   `json:"role"`
-	Status            string   `json:"status"`
-	Deps              string   `json:"deps"`
-	Branch            string   `json:"branch"`
-	Worktree          string   `json:"worktree"`
-	Runner            string   `json:"runner"`
-	Session           string   `json:"session"`
-	AgentAlive        bool     `json:"agent_alive"`
-	Attempts          int      `json:"attempts"`
-	CheckedAt         string   `json:"checked_at"`
-	MergedAt          string   `json:"merged_at"`
-	LastFailureReason string   `json:"last_failure_reason"`
-	LogFile           string   `json:"log_file"`
-	DepsSlice         []string `json:"-"`
+	ID                string           `json:"id"`
+	Title             string           `json:"title"`
+	Role              string           `json:"role"`
+	Status            string           `json:"status"`
+	EffectiveStatus   string           `json:"effective_status"`
+	Deps              string           `json:"deps"`
+	Branch            string           `json:"branch"`
+	Worktree          string           `json:"worktree"`
+	Runner            string           `json:"runner"`
+	Session           string           `json:"session"`
+	SessionState      string           `json:"session_state"`
+	AgentAlive        bool             `json:"agent_alive"`
+	Attempts          int              `json:"attempts"`
+	CheckedAt         string           `json:"checked_at"`
+	MergedAt          string           `json:"merged_at"`
+	LastFailureReason string           `json:"last_failure_reason"`
+	LogFile           string           `json:"log_file"`
+	NeedsInput        *needsInputState `json:"needs_input"`
+	DepsSlice         []string         `json:"-"`
+}
+
+type needsInputState struct {
+	Source   string `json:"source"`
+	File     string `json:"file"`
+	Code     string `json:"code"`
+	Summary  string `json:"summary"`
+	Question string `json:"question"`
+	Blocking string `json:"blocking"`
+	Options  string `json:"options"`
+	Error    string `json:"error"`
 }
 
 type taskDetails struct {

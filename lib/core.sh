@@ -191,6 +191,28 @@ task_get() {
 	fi
 }
 
+normalize_bool_false() {
+	local raw=${1:-}
+	raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	case "$raw" in
+	1 | true | yes | y | on)
+		printf 'true\n'
+		;;
+	*)
+		printf 'false\n'
+		;;
+	esac
+}
+
+task_get_bool() {
+	local task_id=$1
+	local key=$2
+	local default=${3:-false}
+	local raw
+	raw=$(task_get "$task_id" "$key" "$default")
+	normalize_bool_false "$raw"
+}
+
 task_exists() {
 	local task_id=$1
 	[[ -d "$(task_dir "$task_id")" ]]
@@ -209,6 +231,248 @@ task_list_ids() {
 task_status() {
 	local task_id=$1
 	task_get "$task_id" "status" "pending"
+}
+
+# Runtime lifecycle probe for a task.
+# Sets global variables for callers:
+# - TASK_RUNTIME_STATUS: persisted status value
+# - TASK_RUNTIME_AGENT_ALIVE: true|false (runner process considered alive)
+# - TASK_RUNTIME_SESSION_PRESENT: true|false (tmux session exists)
+# - TASK_RUNTIME_STALE_RUNNING: true|false (status=running but agent not alive)
+# - TASK_RUNTIME_STALE_SESSION: true|false (terminal/stale status with live tmux session)
+# - TASK_RUNTIME_EFFECTIVE_STATUS: status with stale-running normalization
+task_runtime_refresh() {
+	local task_id=$1
+
+	TASK_RUNTIME_STATUS=$(task_status "$task_id")
+	TASK_RUNTIME_AGENT_ALIVE=false
+	TASK_RUNTIME_SESSION_PRESENT=false
+	TASK_RUNTIME_STALE_RUNNING=false
+	TASK_RUNTIME_STALE_SESSION=false
+	TASK_RUNTIME_EFFECTIVE_STATUS="$TASK_RUNTIME_STATUS"
+
+	if declare -F runner_has_session >/dev/null 2>&1; then
+		if runner_has_session "$task_id"; then
+			TASK_RUNTIME_SESSION_PRESENT=true
+		fi
+	fi
+
+	if declare -F runner_is_alive >/dev/null 2>&1; then
+		if runner_is_alive "$task_id"; then
+			TASK_RUNTIME_AGENT_ALIVE=true
+		fi
+	fi
+
+	if [[ "$TASK_RUNTIME_STATUS" == "running" ]] && [[ "$TASK_RUNTIME_AGENT_ALIVE" != "true" ]]; then
+		TASK_RUNTIME_STALE_RUNNING=true
+		TASK_RUNTIME_EFFECTIVE_STATUS="stale"
+	fi
+
+	case "$TASK_RUNTIME_STATUS" in
+	done | merged | failed | conflict | needs_input)
+		if [[ "$TASK_RUNTIME_SESSION_PRESENT" == "true" ]]; then
+			TASK_RUNTIME_STALE_SESSION=true
+		fi
+		;;
+	running)
+		if [[ "$TASK_RUNTIME_SESSION_PRESENT" == "true" ]] && [[ "$TASK_RUNTIME_AGENT_ALIVE" != "true" ]]; then
+			TASK_RUNTIME_STALE_SESSION=true
+		fi
+		;;
+	esac
+}
+
+task_is_running_live() {
+	local task_id=$1
+	task_runtime_refresh "$task_id"
+	[[ "$TASK_RUNTIME_STATUS" == "running" ]] && [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]
+}
+
+task_prepare_new_attempt() {
+	local task_id=$1
+	task_set "$task_id" "status" "running"
+	task_set "$task_id" "needs_input_at" ""
+	task_set "$task_id" "checked_at" ""
+	task_set "$task_id" "check_passed" ""
+	task_set "$task_id" "check_total" ""
+	task_set "$task_id" "check_skipped" ""
+	task_set "$task_id" "check_failed" ""
+	task_set "$task_id" "last_check_file" ""
+	task_set "$task_id" "last_failure_reason" ""
+	task_set "$task_id" "agent_exit_code" ""
+	task_set "$task_id" "runner_metadata_missing" ""
+	task_clear_needs_input "$task_id"
+}
+
+task_clear_needs_input() {
+	local task_id=$1
+	task_set "$task_id" "needs_input_source" ""
+	task_set "$task_id" "needs_input_file" ""
+	task_set "$task_id" "needs_input_code" ""
+	task_set "$task_id" "needs_input_summary" ""
+	task_set "$task_id" "needs_input_question" ""
+	task_set "$task_id" "needs_input_blocking" ""
+	task_set "$task_id" "needs_input_options" ""
+	task_set "$task_id" "needs_input_error" ""
+}
+
+task_mark_needs_input() {
+	local task_id=$1
+	local source=${2:-system}
+	local summary=${3:-}
+	local code=${4:-}
+	local question=${5:-}
+	local blocking=${6:-true}
+	local options=${7:-}
+	local artifact_file=${8:-}
+
+	task_set "$task_id" "status" "needs_input"
+	task_set "$task_id" "needs_input_at" "$(now_iso)"
+	task_set "$task_id" "needs_input_source" "$source"
+	task_set "$task_id" "needs_input_file" "$artifact_file"
+	task_set "$task_id" "needs_input_code" "$code"
+	task_set "$task_id" "needs_input_summary" "$summary"
+	task_set "$task_id" "needs_input_question" "$question"
+	task_set "$task_id" "needs_input_blocking" "$blocking"
+	task_set "$task_id" "needs_input_options" "$options"
+	task_set "$task_id" "needs_input_error" ""
+}
+
+# Detect and parse worker needs_input artifacts.
+# Populates global variables:
+# - ORCHD_NEEDS_INPUT_PRESENT: true|false
+# - ORCHD_NEEDS_INPUT_SOURCE: json|markdown|blocker
+# - ORCHD_NEEDS_INPUT_FILE: absolute file path (if present)
+# - ORCHD_NEEDS_INPUT_CODE
+# - ORCHD_NEEDS_INPUT_SUMMARY
+# - ORCHD_NEEDS_INPUT_QUESTION
+# - ORCHD_NEEDS_INPUT_BLOCKING: true|false
+# - ORCHD_NEEDS_INPUT_OPTIONS: option list joined by " | "
+# - ORCHD_NEEDS_INPUT_ERROR: parser error (for malformed JSON)
+needs_input_detect() {
+	local worktree=$1
+	ORCHD_NEEDS_INPUT_PRESENT=false
+	ORCHD_NEEDS_INPUT_SOURCE=""
+	ORCHD_NEEDS_INPUT_FILE=""
+	ORCHD_NEEDS_INPUT_CODE=""
+	ORCHD_NEEDS_INPUT_SUMMARY=""
+	ORCHD_NEEDS_INPUT_QUESTION=""
+	ORCHD_NEEDS_INPUT_BLOCKING="true"
+	ORCHD_NEEDS_INPUT_OPTIONS=""
+	ORCHD_NEEDS_INPUT_ERROR=""
+
+	local json_file="$worktree/.orchd_needs_input.json"
+	local md_file="$worktree/.orchd_needs_input.md"
+	local blocker_file="$worktree/BLOCKER.md"
+
+	if [[ -f "$json_file" ]]; then
+		ORCHD_NEEDS_INPUT_PRESENT=true
+		ORCHD_NEEDS_INPUT_SOURCE="json"
+		ORCHD_NEEDS_INPUT_FILE="$json_file"
+		_needs_input_parse_json "$json_file"
+		return 0
+	fi
+
+	if [[ -f "$md_file" ]]; then
+		ORCHD_NEEDS_INPUT_PRESENT=true
+		ORCHD_NEEDS_INPUT_SOURCE="markdown"
+		ORCHD_NEEDS_INPUT_FILE="$md_file"
+		ORCHD_NEEDS_INPUT_SUMMARY="$(head -n 1 "$md_file" 2>/dev/null || true)"
+		ORCHD_NEEDS_INPUT_QUESTION="$ORCHD_NEEDS_INPUT_SUMMARY"
+		return 0
+	fi
+
+	if [[ -f "$blocker_file" ]]; then
+		ORCHD_NEEDS_INPUT_PRESENT=true
+		ORCHD_NEEDS_INPUT_SOURCE="blocker"
+		ORCHD_NEEDS_INPUT_FILE="$blocker_file"
+		ORCHD_NEEDS_INPUT_SUMMARY="$(head -n 1 "$blocker_file" 2>/dev/null || true)"
+		ORCHD_NEEDS_INPUT_QUESTION="$ORCHD_NEEDS_INPUT_SUMMARY"
+		return 0
+	fi
+}
+
+_needs_input_parse_json() {
+	local json_file=$1
+	if ! command -v python3 >/dev/null 2>&1; then
+		ORCHD_NEEDS_INPUT_ERROR="python3 unavailable; cannot parse needs_input JSON"
+		return 1
+	fi
+
+	local parsed
+	parsed=$(
+		python3 - "$json_file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as exc:
+    print(f"error\t{str(exc).replace(chr(10), ' ')}")
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    print("error\ttop-level JSON must be an object")
+    sys.exit(0)
+
+def norm(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value.replace("\n", " ").replace("\t", " ").strip()
+    return str(value).replace("\n", " ").replace("\t", " ").strip()
+
+options = data.get("options", [])
+if isinstance(options, list):
+    option_values = [norm(x) for x in options if norm(x)]
+    options_text = " | ".join(option_values)
+else:
+    options_text = norm(options)
+
+print(f"code\t{norm(data.get('code', ''))}")
+print(f"summary\t{norm(data.get('summary', ''))}")
+print(f"question\t{norm(data.get('question', ''))}")
+print(f"blocking\t{norm(data.get('blocking', True))}")
+print(f"options\t{options_text}")
+PY
+	)
+
+	local key value
+	while IFS=$'\t' read -r key value; do
+		case "$key" in
+		error)
+			ORCHD_NEEDS_INPUT_ERROR="$value"
+			;;
+		code)
+			ORCHD_NEEDS_INPUT_CODE="$value"
+			;;
+		summary)
+			ORCHD_NEEDS_INPUT_SUMMARY="$value"
+			;;
+		question)
+			ORCHD_NEEDS_INPUT_QUESTION="$value"
+			;;
+		blocking)
+			if [[ "$value" == "true" || "$value" == "false" ]]; then
+				ORCHD_NEEDS_INPUT_BLOCKING="$value"
+			fi
+			;;
+		options)
+			ORCHD_NEEDS_INPUT_OPTIONS="$value"
+			;;
+		esac
+	done <<<"$parsed"
+
+	if [[ -z "$ORCHD_NEEDS_INPUT_SUMMARY" ]] && [[ -n "$ORCHD_NEEDS_INPUT_QUESTION" ]]; then
+		ORCHD_NEEDS_INPUT_SUMMARY="$ORCHD_NEEDS_INPUT_QUESTION"
+	fi
 }
 
 task_is_ready() {
@@ -480,7 +744,8 @@ A task is `done` only when ALL of these are true:
 
 ## Blocker Protocol
 
-- If blocked, create `.orchd_needs_input.md` at the worktree root explaining what is needed.
+- If blocked, create `.orchd_needs_input.json` at the worktree root with structured fields (`code`, `summary`, `question`, `blocking`, `options`).
+- You may also add `.orchd_needs_input.md` for extra human context.
 - If a dependency is missing, document it and exit cleanly.
 
 ## Required Deliverable
@@ -495,7 +760,7 @@ Create TASK_REPORT.md at the worktree root with:
 
 Notes:
 
-- Do not commit TASK_REPORT.md or .orchd_needs_input.md; they are treated as local artifacts.
+- Do not commit TASK_REPORT.md, .orchd_needs_input.json, or .orchd_needs_input.md; they are treated as local artifacts.
 - orchd archives TASK_REPORT.md into `.orchd/tasks/<task-id>/` during `orchd check`.
 EOF
 		;;

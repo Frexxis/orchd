@@ -49,6 +49,9 @@ _resume_single() {
 	[[ -n "$worktree" ]] || die "no worktree found for task: $task_id"
 	[[ -d "$worktree" ]] || die "worktree missing: $worktree"
 
+	# Always clear stale tmux sessions before opening a new attempt.
+	_resume_cleanup_stale_session "$task_id"
+
 	# Ensure agent policy docs exist in the worktree for the resumed agent.
 	ensure_agent_docs "$worktree"
 	worktree_link_python_venv "$worktree" || true
@@ -86,7 +89,7 @@ _resume_single() {
 
 	# Reset task status and runner metadata
 	task_set "$task_id" "runner" "$runner"
-	task_set "$task_id" "status" "running"
+	task_prepare_new_attempt "$task_id"
 
 	# Launch agent
 	if runner_exec "$runner" "$task_id" "$prompt" "$worktree"; then
@@ -97,6 +100,17 @@ _resume_single() {
 		log_event "ERROR" "resume failed: $task_id (runner=$runner)"
 		die "failed to resume agent for task: $task_id"
 	fi
+}
+
+_resume_cleanup_stale_session() {
+	local task_id=$1
+	if ! runner_has_session "$task_id"; then
+		return 0
+	fi
+	local session_name
+	session_name=$(runner_session_name "$task_id")
+	runner_stop "$task_id"
+	log_event "INFO" "resume preflight: cleaned stale session for $task_id ($session_name)"
 }
 
 _rotate_task_logs() {
@@ -140,8 +154,16 @@ Reason:
 Attempt:
 {attempt}
 
+Execution mode:
+- execution_only: {execution_only}
+- no_planning: {no_planning}
+- commit_required: {commit_required}
+
+{execution_mode_instructions}
+
 Notes:
-- If you need user input (credentials, decisions, missing requirements), write it to a file named .orchd_needs_input.md at the worktree root and exit.
+- If you need user input (credentials, decisions, missing requirements), write a structured payload to .orchd_needs_input.json with keys code, summary, question, blocking, options, then exit.
+- You may also add .orchd_needs_input.md for extra context.
 - Otherwise, fix issues, run relevant tests, commit, and produce TASK_REPORT.md.
 EOF
 		)
@@ -152,6 +174,25 @@ EOF
 	description=$(task_get "$task_id" "description" "Implement $task_id")
 	acceptance=$(task_get "$task_id" "acceptance" "All tests pass")
 	role=$(task_get "$task_id" "role" "domain")
+	local execution_only no_planning commit_required execution_mode_instructions
+	execution_only=$(task_get_bool "$task_id" "execution_only" "false")
+	no_planning=$(task_get_bool "$task_id" "no_planning" "false")
+	commit_required=$(task_get_bool "$task_id" "commit_required" "false")
+
+	execution_mode_instructions="- Follow normal worker flow: inspect, implement, verify, and report."
+	if [[ "$execution_only" == "true" ]] || [[ "$no_planning" == "true" ]] || [[ "$commit_required" == "true" ]]; then
+		execution_mode_instructions=""
+		if [[ "$execution_only" == "true" ]]; then
+			execution_mode_instructions+="- EXECUTION_ONLY is enabled: prioritize concrete code changes and verification over broad exploration."$'\n'
+		fi
+		if [[ "$no_planning" == "true" ]]; then
+			execution_mode_instructions+="- NO_PLANNING is enabled: do not produce plan-only output; perform the implementation steps directly."$'\n'
+		fi
+		if [[ "$commit_required" == "true" ]]; then
+			execution_mode_instructions+="- COMMIT_REQUIRED is enabled: create at least one focused commit before finishing."$'\n'
+		fi
+		execution_mode_instructions=${execution_mode_instructions%$'\n'}
+	fi
 
 	prompt=$(replace_token "$prompt" "{task_id}" "$task_id")
 	prompt=$(replace_token "$prompt" "{worktree_path}" "$worktree_path")
@@ -161,6 +202,10 @@ EOF
 	prompt=$(replace_token "$prompt" "{agent_role}" "$role")
 	prompt=$(replace_token "$prompt" "{attempt}" "$attempt")
 	prompt=$(replace_token "$prompt" "{resume_reason}" "$reason")
+	prompt=$(replace_token "$prompt" "{execution_only}" "$execution_only")
+	prompt=$(replace_token "$prompt" "{no_planning}" "$no_planning")
+	prompt=$(replace_token "$prompt" "{commit_required}" "$commit_required")
+	prompt=$(replace_token "$prompt" "{execution_mode_instructions}" "$execution_mode_instructions")
 
 	# Inject memory bank context
 	local memory_ctx

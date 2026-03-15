@@ -1018,10 +1018,33 @@ func (m *model) refreshDetailViewport() {
 		b.WriteString(t.Title)
 		b.WriteString("\n\n")
 	}
-	fmt.Fprintf(&b, "role: %s\nrunner: %s\nattempts: %d\nagent alive: %t\n\n", emptyDash(t.Role), emptyDash(t.Runner), t.Attempts, t.AgentAlive)
-	fmt.Fprintf(&b, "branch: %s\nsession: %s\nstarted: %s\nchecked: %s\nmerged: %s\n\n", emptyDash(t.Branch), emptyDash(t.Session), emptyDash(m.details.StartedAt), emptyDash(t.CheckedAt), emptyDash(t.MergedAt))
+	fmt.Fprintf(&b, "role: %s\nrunner: %s\nattempts: %d\nstatus: %s\nagent alive: %t\n\n", emptyDash(t.Role), emptyDash(t.Runner), t.Attempts, m.taskDisplayStatus(*t), t.AgentAlive)
+	fmt.Fprintf(&b, "branch: %s\nsession: %s\nsession state: %s\nstarted: %s\nchecked: %s\nmerged: %s\n\n", emptyDash(t.Branch), emptyDash(t.Session), emptyDash(t.SessionState), emptyDash(m.details.StartedAt), emptyDash(t.CheckedAt), emptyDash(t.MergedAt))
 	fmt.Fprintf(&b, "deps: %s\n\n", deps)
 	fmt.Fprintf(&b, "last check: %s\n\n", checkLine)
+
+	if t.NeedsInput != nil {
+		b.WriteString("Needs Input\n")
+		fmt.Fprintf(&b, "source: %s\n", emptyDash(t.NeedsInput.Source))
+		fmt.Fprintf(&b, "code: %s\n", emptyDash(t.NeedsInput.Code))
+		fmt.Fprintf(&b, "blocking: %s\n", emptyDash(t.NeedsInput.Blocking))
+		if strings.TrimSpace(t.NeedsInput.Summary) != "" {
+			fmt.Fprintf(&b, "summary: %s\n", t.NeedsInput.Summary)
+		}
+		if strings.TrimSpace(t.NeedsInput.Question) != "" {
+			fmt.Fprintf(&b, "question: %s\n", t.NeedsInput.Question)
+		}
+		if strings.TrimSpace(t.NeedsInput.Options) != "" {
+			fmt.Fprintf(&b, "options: %s\n", t.NeedsInput.Options)
+		}
+		if strings.TrimSpace(t.NeedsInput.Error) != "" {
+			fmt.Fprintf(&b, "error: %s\n", t.NeedsInput.Error)
+		}
+		if strings.TrimSpace(t.NeedsInput.File) != "" {
+			fmt.Fprintf(&b, "file: %s\n", t.NeedsInput.File)
+		}
+		b.WriteString("\n")
+	}
 
 	if strings.TrimSpace(m.details.Description) != "" {
 		b.WriteString("Description\n")
@@ -1058,6 +1081,8 @@ func (m *model) statusChip(status string) string {
 		return m.styles.ChipPending.Render("PENDING")
 	case "running":
 		return m.styles.ChipRunning.Render("RUNNING")
+	case "stale":
+		return m.styles.ChipNeeds.Render("STALE")
 	case "done":
 		return m.styles.ChipDone.Render("DONE")
 	case "merged":
@@ -1071,6 +1096,13 @@ func (m *model) statusChip(status string) string {
 	default:
 		return m.styles.Muted.Render(strings.ToUpper(truncate(s, 10)))
 	}
+}
+
+func (m *model) taskDisplayStatus(t taskState) string {
+	if strings.TrimSpace(t.EffectiveStatus) != "" {
+		return t.EffectiveStatus
+	}
+	return t.Status
 }
 
 func (m *model) refreshDAGViewport() {

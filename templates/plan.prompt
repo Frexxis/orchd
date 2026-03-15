@@ -29,6 +29,11 @@ Optional per-task quality commands (use when the project is multi-stack or task-
 - TEST_CMD: shell command to test this task's area
 - BUILD_CMD: shell command to build this task's area
 
+Optional worker execution mode flags (set true only when needed):
+- EXECUTION_ONLY: true|false (if true, worker should implement directly and avoid broad exploration)
+- NO_PLANNING: true|false (if true, worker should skip planning loops and execute concrete edits)
+- COMMIT_REQUIRED: true|false (if true, worker should produce at least one focused commit)
+
 If you include these, keep them short and runnable from the repo root.
 
 Output ONLY in this exact format, one task per block, separated by blank lines:
@@ -44,6 +49,9 @@ ACCEPTANCE: <testable acceptance criteria>
 LINT_CMD: <lint command or "none">
 TEST_CMD: <test command or "none">
 BUILD_CMD: <build command or "none">
+EXECUTION_ONLY: <true|false>
+NO_PLANNING: <true|false>
+COMMIT_REQUIRED: <true|false>
 
 Rules:
 - Order tasks so that independent ones come first

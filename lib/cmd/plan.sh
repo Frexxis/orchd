@@ -27,6 +27,7 @@ notes:
   - --runner overrides the configured/auto-detected runner for planning only
   - plan output must follow the TASK/TITLE/ROLE/DEPS/DESCRIPTION/ACCEPTANCE format
   - optional per-task overrides: LINT_CMD, TEST_CMD, BUILD_CMD
+  - optional execution mode flags: EXECUTION_ONLY, NO_PLANNING, COMMIT_REQUIRED
 EOF
 		return 0
 	fi
@@ -343,6 +344,9 @@ _parse_plan_output() {
 		LINT_CMD:*) keyword="LINT_CMD" ;;
 		TEST_CMD:*) keyword="TEST_CMD" ;;
 		BUILD_CMD:*) keyword="BUILD_CMD" ;;
+		EXECUTION_ONLY:*) keyword="EXECUTION_ONLY" ;;
+		NO_PLANNING:*) keyword="NO_PLANNING" ;;
+		COMMIT_REQUIRED:*) keyword="COMMIT_REQUIRED" ;;
 		esac
 
 		if [[ -n "$keyword" ]]; then
@@ -362,6 +366,9 @@ _parse_plan_output() {
 				if [[ -n "$current_id" ]]; then
 					mkdir -p "$TASKS_DIR/$current_id"
 					task_set "$current_id" "status" "pending"
+					task_set "$current_id" "execution_only" "false"
+					task_set "$current_id" "no_planning" "false"
+					task_set "$current_id" "commit_required" "false"
 					count=$((count + 1))
 				fi
 				;;
@@ -403,6 +410,15 @@ _parse_plan_output() {
 				fi
 				[[ -n "$current_id" ]] && task_set "$current_id" "build_cmd" "$val"
 				;;
+			EXECUTION_ONLY)
+				[[ -n "$current_id" ]] && task_set "$current_id" "execution_only" "$(_plan_bool "$val")"
+				;;
+			NO_PLANNING)
+				[[ -n "$current_id" ]] && task_set "$current_id" "no_planning" "$(_plan_bool "$val")"
+				;;
+			COMMIT_REQUIRED)
+				[[ -n "$current_id" ]] && task_set "$current_id" "commit_required" "$(_plan_bool "$val")"
+				;;
 			esac
 		else
 			# Non-keyword line: append to active multi-line field (preserve blank lines)
@@ -437,6 +453,19 @@ _parse_plan_output() {
 	printf '\nparsed %d tasks:\n\n' "$count"
 	_print_task_table
 	printf '\nnext: orchd spawn --all  (or orchd spawn <task-id>)\n'
+}
+
+_plan_bool() {
+	local raw=${1:-}
+	raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	case "$raw" in
+	1 | true | yes | y | on)
+		printf 'true\n'
+		;;
+	*)
+		printf 'false\n'
+		;;
+	esac
 }
 
 # --- Print task table ---

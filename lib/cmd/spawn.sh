@@ -104,7 +104,7 @@ _spawn_single() {
 	task_set "$task_id" "branch" "$branch"
 	task_set "$task_id" "worktree" "$worktree_path"
 	task_set "$task_id" "runner" "$runner"
-	task_set "$task_id" "status" "running"
+	task_prepare_new_attempt "$task_id"
 
 	# Launch agent
 	if runner_exec "$runner" "$task_id" "$prompt" "$worktree_path"; then
@@ -195,6 +195,25 @@ _build_kickoff_prompt() {
 	description=$(task_get "$task_id" "description" "Implement $task_id")
 	acceptance=$(task_get "$task_id" "acceptance" "All tests pass")
 	role=$(task_get "$task_id" "role" "domain")
+	local execution_only no_planning commit_required execution_mode_instructions
+	execution_only=$(task_get_bool "$task_id" "execution_only" "false")
+	no_planning=$(task_get_bool "$task_id" "no_planning" "false")
+	commit_required=$(task_get_bool "$task_id" "commit_required" "false")
+
+	execution_mode_instructions="- Follow normal worker flow: inspect, implement, verify, and report."
+	if [[ "$execution_only" == "true" ]] || [[ "$no_planning" == "true" ]] || [[ "$commit_required" == "true" ]]; then
+		execution_mode_instructions=""
+		if [[ "$execution_only" == "true" ]]; then
+			execution_mode_instructions+="- EXECUTION_ONLY is enabled: prioritize concrete code changes and verification over broad exploration."$'\n'
+		fi
+		if [[ "$no_planning" == "true" ]]; then
+			execution_mode_instructions+="- NO_PLANNING is enabled: do not produce plan-only output; perform the implementation steps directly."$'\n'
+		fi
+		if [[ "$commit_required" == "true" ]]; then
+			execution_mode_instructions+="- COMMIT_REQUIRED is enabled: create at least one focused commit before finishing."$'\n'
+		fi
+		execution_mode_instructions=${execution_mode_instructions%$'\n'}
+	fi
 
 	prompt=$(replace_token "$prompt" "{task_id}" "$task_id")
 	prompt=$(replace_token "$prompt" "{task_title}" "$title")
@@ -202,6 +221,10 @@ _build_kickoff_prompt() {
 	prompt=$(replace_token "$prompt" "{acceptance_criteria}" "$acceptance")
 	prompt=$(replace_token "$prompt" "{agent_role}" "$role")
 	prompt=$(replace_token "$prompt" "{worktree_path}" "$worktree_path")
+	prompt=$(replace_token "$prompt" "{execution_only}" "$execution_only")
+	prompt=$(replace_token "$prompt" "{no_planning}" "$no_planning")
+	prompt=$(replace_token "$prompt" "{commit_required}" "$commit_required")
+	prompt=$(replace_token "$prompt" "{execution_mode_instructions}" "$execution_mode_instructions")
 
 	# Inject memory bank context
 	local memory_ctx

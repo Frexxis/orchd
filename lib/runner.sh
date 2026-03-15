@@ -142,8 +142,8 @@ _runner_cmd_claude() {
 	# claude CLI: claude -p "prompt" --workdir <dir> --allowedTools ...
 	printf 'cd %s && PROMPT="$(cat %s)" && %s -p "$PROMPT" --output-format text > %s 2>&1; rc=$?; printf "ORCHD_EXIT:%%s\\n" "$rc" >> %s; printf "%%s\\n" "$rc" > %s' \
 		"$(printf '%q' "$worktree")" \
-		"$claude_bin" \
 		"$(printf '%q' "$prompt_file")" \
+		"$claude_bin" \
 		"$(printf '%q' "$log_file")" \
 		"$(printf '%q' "$log_file")" \
 		"$(printf '%q' "$exit_file")"
@@ -212,6 +212,18 @@ _runner_cmd_custom() {
 
 # --- Agent session management ---
 
+runner_session_name() {
+	local task_id=$1
+	task_get "$task_id" "session" ""
+}
+
+runner_has_session() {
+	local task_id=$1
+	local session_name
+	session_name=$(runner_session_name "$task_id")
+	[[ -n "$session_name" ]] && tmux has-session -t "$session_name" 2>/dev/null
+}
+
 runner_is_alive() {
 	local task_id=$1
 	local exit_file="$LOGS_DIR/${task_id}.exit"
@@ -219,16 +231,14 @@ runner_is_alive() {
 	if [[ -f "$exit_file" ]]; then
 		return 1
 	fi
-	local session_name
-	session_name=$(task_get "$task_id" "session" "")
-	[[ -n "$session_name" ]] && tmux has-session -t "$session_name" 2>/dev/null
+	runner_has_session "$task_id"
 }
 
 runner_stop() {
 	local task_id=$1
 	local session_name
-	session_name=$(task_get "$task_id" "session" "")
-	if [[ -n "$session_name" ]]; then
+	session_name=$(runner_session_name "$task_id")
+	if [[ -n "$session_name" ]] && tmux has-session -t "$session_name" 2>/dev/null; then
 		tmux kill-session -t "$session_name" 2>/dev/null || true
 		log_event "INFO" "agent stopped: $session_name"
 	fi

@@ -39,13 +39,22 @@ STATUS: GO
 4. Any new functionality has appropriate tests
 5. TASK_REPORT.md at the worktree root (see below)
 
+## Execution Mode
+
+- execution_only: {execution_only}
+- no_planning: {no_planning}
+- commit_required: {commit_required}
+
+{execution_mode_instructions}
+
 ## Rules
 
 - Work ONLY within your worktree: {worktree_path}
 - Commit frequently with clear messages
 - Do NOT merge into main — the orchestrator handles merges
 - Do not log or commit PII, tokens, or API keys
-- If you are blocked or need user input (credentials, decisions, missing requirements), write it to a file named .orchd_needs_input.md at the worktree root and exit
+- If you are blocked or need user input (credentials, decisions, missing requirements), write a structured payload to `.orchd_needs_input.json` with keys `code`, `summary`, `question`, `blocking`, `options`, then exit
+- You may also add `.orchd_needs_input.md` for extra context
 
 ## TASK_REPORT.md (Required)
 

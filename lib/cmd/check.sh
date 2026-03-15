@@ -163,37 +163,83 @@ PY
 	local skipped=0
 	local total=0
 	local needs_input=false
-	if [[ -f "$worktree/.orchd_needs_input.md" ]]; then
+	local needs_input_source=""
+	local needs_input_file=""
+	local needs_input_code=""
+	local needs_input_summary=""
+	local needs_input_question=""
+	local needs_input_blocking="true"
+	local needs_input_options=""
+	local needs_input_error=""
+
+	needs_input_detect "$worktree"
+	if [[ "$ORCHD_NEEDS_INPUT_PRESENT" == "true" ]]; then
 		needs_input=true
+		needs_input_source="$ORCHD_NEEDS_INPUT_SOURCE"
+		needs_input_file="$ORCHD_NEEDS_INPUT_FILE"
+		needs_input_code="$ORCHD_NEEDS_INPUT_CODE"
+		needs_input_summary="$ORCHD_NEEDS_INPUT_SUMMARY"
+		needs_input_question="$ORCHD_NEEDS_INPUT_QUESTION"
+		needs_input_blocking="$ORCHD_NEEDS_INPUT_BLOCKING"
+		needs_input_options="$ORCHD_NEEDS_INPUT_OPTIONS"
+		needs_input_error="$ORCHD_NEEDS_INPUT_ERROR"
+
 		total=$((total + 1))
-		_check_printf '  [FAIL] needs user input (.orchd_needs_input.md present)\n'
-		failed=$((failed + 1))
-	fi
-	# Backward compatibility: treat BLOCKER.md as needs_input as well.
-	if [[ -f "$worktree/BLOCKER.md" ]]; then
-		needs_input=true
-		total=$((total + 1))
-		_check_printf '  [FAIL] blocked (BLOCKER.md present; use .orchd_needs_input.md going forward)\n'
+		case "$needs_input_source" in
+		json)
+			if [[ -n "$needs_input_error" ]]; then
+				_check_printf '  [FAIL] needs user input (.orchd_needs_input.json invalid: %s)\n' "$needs_input_error"
+			else
+				_check_printf '  [FAIL] needs user input (.orchd_needs_input.json present)\n'
+			fi
+			if [[ -n "$needs_input_summary" ]]; then
+				_check_printf '         summary: %s\n' "$needs_input_summary"
+			fi
+			if [[ -n "$needs_input_question" ]]; then
+				_check_printf '         question: %s\n' "$needs_input_question"
+			fi
+			;;
+		markdown)
+			_check_printf '  [FAIL] needs user input (.orchd_needs_input.md present)\n'
+			;;
+		blocker)
+			_check_printf '  [FAIL] blocked (BLOCKER.md present; prefer .orchd_needs_input.json)\n'
+			;;
+		esac
 		failed=$((failed + 1))
 	fi
 
 	# 1. Check if agent session has exited (task is complete)
 	total=$((total + 1))
-	local agent_alive=false
-	if runner_is_alive "$task_id"; then
-		agent_alive=true
+	task_runtime_refresh "$task_id"
+	local agent_alive="$TASK_RUNTIME_AGENT_ALIVE"
+	local session_alive="$TASK_RUNTIME_SESSION_PRESENT"
+	local agent_exit_unknown=false
+
+	# Terminal states must not keep a live session around.
+	if [[ "$status" != "running" ]] && $session_alive; then
+		runner_stop "$task_id"
+		session_alive=false
+		agent_alive=false
+		_check_printf '  [INFO] cleaned stale agent session for terminal task state (%s)\n' "$status"
+	fi
+	if [[ "$status" == "running" ]] && $session_alive && ! $agent_alive; then
+		runner_stop "$task_id"
+		session_alive=false
+		_check_printf '  [INFO] cleaned stale agent session shell for non-alive running task\n'
 	fi
 
 	# If the worker explicitly requested user input, treat as terminal immediately.
 	if $needs_input; then
-		task_set "$task_id" "status" "needs_input"
-		task_set "$task_id" "needs_input_at" "$(now_iso)"
-		if $agent_alive; then
+		task_mark_needs_input "$task_id" "$needs_input_source" "$needs_input_summary" "$needs_input_code" "$needs_input_question" "$needs_input_blocking" "$needs_input_options" "$needs_input_file"
+		task_set "$task_id" "needs_input_error" "$needs_input_error"
+		if $session_alive; then
 			runner_stop "$task_id"
 			agent_alive=false
+			session_alive=false
 			_check_printf '  [INFO] stopped agent session due to needs_input\n'
 		fi
-		_check_printf '\n  task marked as NEEDS_INPUT (.orchd_needs_input.md)\n'
+		_check_printf '\n  task marked as NEEDS_INPUT (%s)\n' "${needs_input_source:-artifact}"
 		log_event "WARN" "needs input: $task_id"
 
 		# Record evidence and exit early
@@ -213,12 +259,16 @@ PY
 		local exit_code
 		exit_code=$(runner_exit_code "$task_id" || true)
 		if [[ -z "$exit_code" ]]; then
-			_check_printf '  [FAIL] agent exit status unknown (missing ORCHD_EXIT marker)\n'
-			failed=$((failed + 1))
+			agent_exit_unknown=true
+			task_set "$task_id" "runner_metadata_missing" "true"
+			_check_printf '  [WARN] agent exit status unknown (missing ORCHD_EXIT marker)\n'
+			skipped=$((skipped + 1))
 		elif [[ "$exit_code" == "0" ]]; then
+			task_set "$task_id" "runner_metadata_missing" "false"
 			_check_printf '  [PASS] agent session completed (exit=0)\n'
 			passed=$((passed + 1))
 		else
+			task_set "$task_id" "runner_metadata_missing" "false"
 			_check_printf '  [FAIL] agent session failed (exit=%s)\n' "$exit_code"
 			failed=$((failed + 1))
 		fi
@@ -416,23 +466,24 @@ PY
 
 	if ((failed == 0)) && ! $agent_alive; then
 		task_set "$task_id" "status" "done"
+		task_set "$task_id" "last_failure_reason" ""
+		task_set "$task_id" "needs_input_at" ""
+		task_clear_needs_input "$task_id"
 		_check_printf '\n  task marked as DONE (ready for merge)\n'
 		log_event "INFO" "quality gate passed: $task_id ($passed/$total)"
+		if $agent_exit_unknown; then
+			log_event "WARN" "quality gate passed with missing agent exit marker: $task_id"
+		fi
 	else
 		if $agent_alive; then
 			_check_printf '\n  agent still running — check again later\n'
 		else
-			if $needs_input; then
-				task_set "$task_id" "status" "needs_input"
-				task_set "$task_id" "needs_input_at" "$(now_iso)"
-				_check_printf '\n  task marked as NEEDS_INPUT (.orchd_needs_input.md)\n'
-				log_event "WARN" "needs input: $task_id"
-			else
-				task_set "$task_id" "status" "failed"
-				task_set "$task_id" "last_failure_reason" "quality_gate"
-				_check_printf '\n  task marked as FAILED (quality gate failed)\n'
-				log_event "WARN" "quality gate failed: $task_id ($passed/$total, $failed failed)"
-			fi
+			task_set "$task_id" "status" "failed"
+			task_set "$task_id" "last_failure_reason" "quality_gate"
+			task_set "$task_id" "needs_input_at" ""
+			task_clear_needs_input "$task_id"
+			_check_printf '\n  task marked as FAILED (quality gate failed)\n'
+			log_event "WARN" "quality gate failed: $task_id ($passed/$total, $failed failed)"
 		fi
 	fi
 }

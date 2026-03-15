@@ -49,7 +49,8 @@ A task is `done` only when ALL of these are true:
 
 ## Blocker Protocol
 
-- If blocked, create `.orchd_needs_input.md` at the worktree root explaining what is needed.
+- If blocked, create `.orchd_needs_input.json` at the worktree root with structured fields (`code`, `summary`, `question`, `blocking`, `options`).
+- You may also add `.orchd_needs_input.md` for extra human context.
 - If a dependency is missing, document it and exit cleanly.
 
 ## Required Deliverable
@@ -64,5 +65,5 @@ Create TASK_REPORT.md at the worktree root with:
 
 Notes:
 
-- Do not commit TASK_REPORT.md or .orchd_needs_input.md; they are treated as local artifacts.
+- Do not commit TASK_REPORT.md, .orchd_needs_input.json, or .orchd_needs_input.md; they are treated as local artifacts.
 - orchd archives TASK_REPORT.md into `.orchd/tasks/<task-id>/` during `orchd check`.

@@ -97,3 +97,42 @@ func TestViewKeepsHeaderVisibleWithVeryLongDetailContent(t *testing.T) {
 		}
 	}
 }
+
+func TestViewShowsNeedsInputDetails(t *testing.T) {
+	m, err := newModel(appConfig{projectDir: ".", themeName: "dark", showSplash: false})
+	if err != nil {
+		t.Fatalf("newModel: %v", err)
+	}
+
+	m.state = orchState{
+		ProjectRoot: "/tmp/project",
+		Tasks: []taskState{{
+			ID:              "needs-input-task",
+			Title:           "Needs Product Decision",
+			Status:          "needs_input",
+			EffectiveStatus: "needs_input",
+			Role:            "domain",
+			NeedsInput: &needsInputState{
+				Source:   "json",
+				Code:     "decision_required",
+				Summary:  "Need product direction",
+				Question: "Should we ship flow A or B?",
+				Options:  "flow_a | flow_b",
+				Blocking: "true",
+			},
+		}},
+	}
+	m.selectedTaskIdx = 0
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	model := updated.(model)
+	model.refreshAllViewportContent()
+	out := model.View()
+
+	checks := []string{"Needs Input", "decision_required", "flow_a | flow_b"}
+	for _, needle := range checks {
+		if !strings.Contains(out, needle) {
+			t.Fatalf("expected needs-input view output to contain %q", needle)
+		}
+	}
+}
