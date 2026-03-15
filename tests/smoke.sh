@@ -129,6 +129,10 @@ get_base_branch() {
 cleanup() {
 	# Stop any test sessions
 	tmux kill-session -t "orchd-smoketest" 2>/dev/null || true
+	tmux kill-session -t "orchd-test-await-live" 2>/dev/null || true
+	tmux kill-session -t "orchd-test-await-stale" 2>/dev/null || true
+	tmux kill-session -t "orchd-test-reconcile-stale" 2>/dev/null || true
+	tmux kill-session -t "orchd-agent-resume-stale" 2>/dev/null || true
 	# Remove temp repo
 	if [[ -n "${TMPDIR:-}" && -d "$TMPDIR" ]]; then
 		rm -rf "$TMPDIR"
@@ -138,6 +142,9 @@ cleanup() {
 	# Remove init test dir
 	if [[ -n "${INIT_DIR:-}" && -d "$INIT_DIR" ]]; then
 		rm -rf "$INIT_DIR"
+	fi
+	if [[ -n "${LIFE_DIR:-}" && -d "$LIFE_DIR" ]]; then
+		rm -rf "$LIFE_DIR"
 	fi
 }
 
@@ -241,6 +248,12 @@ else
 	fail ".gitignore not updated"
 fi
 
+if [[ -f "$INIT_DIR/.gitignore" ]] && grep -q '.orchd_needs_input.json' "$INIT_DIR/.gitignore"; then
+	pass ".gitignore includes needs_input JSON artifact"
+else
+	fail ".gitignore includes needs_input JSON artifact"
+fi
+
 if [[ -f "$INIT_DIR/AGENTS.md" ]]; then
 	pass "AGENTS.md created"
 else
@@ -288,12 +301,74 @@ ACCEPTANCE: done
 TEST_CMD: echo test
 LINT_CMD: echo lint
 BUILD_CMD: none
+EXECUTION_ONLY: true
+NO_PLANNING: yes
+COMMIT_REQUIRED: 1
 EOF'
 assert_exit_0 "plan --file succeeds" run_in_dir "$INIT_DIR" "$ORCHD" plan --file .orchd/plan_in.txt
 assert_output_contains "task test_cmd stored" "echo test" cat "$INIT_DIR/.orchd/tasks/t1/test_cmd"
 assert_output_contains "task lint_cmd stored" "echo lint" cat "$INIT_DIR/.orchd/tasks/t1/lint_cmd"
+assert_output_contains "task execution_only stored" "true" cat "$INIT_DIR/.orchd/tasks/t1/execution_only"
+assert_output_contains "task no_planning stored" "true" cat "$INIT_DIR/.orchd/tasks/t1/no_planning"
+assert_output_contains "task commit_required stored" "true" cat "$INIT_DIR/.orchd/tasks/t1/commit_required"
+
+KICKOFF_MODE_PROMPT=$(
+	cd "$INIT_DIR" || exit 1
+	ORCHD_LIB_DIR="$(dirname "$ORCHD")/../lib"
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/runner.sh
+	source "$ORCHD_LIB_DIR/runner.sh"
+	# shellcheck source=../lib/cmd/spawn.sh
+	source "$ORCHD_LIB_DIR/cmd/spawn.sh"
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd"
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	LOGS_DIR="$ORCHD_DIR/logs"
+	_build_kickoff_prompt "t1" "$INIT_DIR"
+)
+if printf '%s' "$KICKOFF_MODE_PROMPT" | grep -q 'execution_only: true' && printf '%s' "$KICKOFF_MODE_PROMPT" | grep -q 'NO_PLANNING is enabled'; then
+	pass "kickoff prompt includes strict execution mode directives"
+else
+	fail "kickoff prompt includes strict execution mode directives"
+fi
 # Cleanup so later autopilot tests see only the tasks they create.
 rm -rf "$INIT_DIR/.orchd/tasks/t1" "$INIT_DIR/.orchd/plan_in.txt"
+
+printf '\n[6c] JSONL text extraction is tolerant\n'
+ORCHD_LIB_DIR="$(dirname "$ORCHD")/../lib"
+EXTRACT_OUT=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/plan.sh
+	source "$ORCHD_LIB_DIR/cmd/plan.sh"
+	cat <<'EOF' | _extract_text_from_jsonl
+{"type":"item.completed","item":{"type":"assistant_message","text":"TASK: t1\nTITLE: X"}}
+EOF
+)
+if printf '%s' "$EXTRACT_OUT" | grep -q 'TASK: t1'; then
+	pass "extractor reads item.completed text"
+else
+	fail "extractor reads item.completed text"
+fi
+
+EXTRACT_OUT2=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/plan.sh
+	source "$ORCHD_LIB_DIR/cmd/plan.sh"
+	cat <<'EOF' | _extract_text_from_jsonl
+{"type":"response.output_text.delta","delta":"TASK: t2\\n"}
+{"type":"response.output_text.delta","delta":"TITLE: Y\\n"}
+EOF
+)
+if printf '%s' "$EXTRACT_OUT2" | grep -q 'TASK: t2'; then
+	pass "extractor falls back to delta stream"
+else
+	fail "extractor falls back to delta stream"
+fi
 
 printf '\n[7] Orchestration commands (no-project validation)\n'
 # These should fail gracefully when not in an orchd project
@@ -311,12 +386,33 @@ printf '\n[9] Utility commands (in initialized project)\n'
 assert_exit_0 "doctor in init dir" run_in_dir "$INIT_DIR" "$ORCHD" doctor
 assert_exit_0 "refresh-docs in init dir" run_in_dir "$INIT_DIR" "$ORCHD" refresh-docs
 
+printf '\n[9b] Python auto-detect prefers venv bins\n'
+mkdir -p "$INIT_DIR/.venv/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$INIT_DIR/.venv/bin/python"
+chmod +x "$INIT_DIR/.venv/bin/python"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$INIT_DIR/.venv/bin/ruff"
+chmod +x "$INIT_DIR/.venv/bin/ruff"
+printf '[build-system]\nrequires = []\n' >"$INIT_DIR/pyproject.toml"
+DETECT_OUT=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	quality_detect_cmds "$INIT_DIR"
+	printf '%s\n' "$ORCHD_DETECTED_LINT_CMD"
+)
+if printf '%s' "$DETECT_OUT" | grep -q '^\.venv/bin/ruff'; then
+	pass "python lint auto-detect uses .venv/bin/ruff"
+else
+	fail "python lint auto-detect uses .venv/bin/ruff"
+fi
+
 printf '\n[10] Help includes orchestration commands\n'
 assert_output_contains "help shows init" "init" "$ORCHD" --help
 assert_output_contains "help shows plan" "plan" "$ORCHD" --help
 assert_output_contains "help shows review" "review" "$ORCHD" --help
 assert_output_contains "help shows spawn" "spawn" "$ORCHD" --help
 assert_output_contains "help shows board" "board" "$ORCHD" --help
+assert_output_contains "help shows tui" "tui" "$ORCHD" --help
 assert_output_contains "help shows state" "state" "$ORCHD" --help
 assert_output_contains "help shows await" "await" "$ORCHD" --help
 assert_output_contains "help shows check" "check" "$ORCHD" --help
@@ -470,6 +566,12 @@ printf 'Test memory lesson writing\n' >"$INIT_DIR/.orchd/tasks/memory-lesson-tes
 
 assert_exit_0 "merge writes memory lesson" run_in_dir "$INIT_DIR" "$ORCHD" merge "memory-lesson-test"
 
+if git -C "$INIT_DIR" log -n 20 --oneline | grep -q 'docs(memory): update after merging'; then
+	fail "merge does not create separate docs(memory) commit"
+else
+	pass "merge does not create separate docs(memory) commit"
+fi
+
 if [[ -f "$INIT_DIR/docs/memory/lessons/memory-lesson-test.md" ]]; then
 	pass "lesson file created after merge"
 else
@@ -622,12 +724,139 @@ assert_exit_0 "fleet stop exits 0" "$ORCHD" fleet stop
 export ORCHD_STATE_DIR="$ORCHD_TEST_STATE_DIR"
 rm -rf "$FLEET_DIR"
 
-printf '\n[18] Help includes new commands\n'
+printf '\n[18] Lifecycle hardening regressions\n'
+LIFE_DIR=$(mktemp -d)
+git -C "$LIFE_DIR" init -q
+git -C "$LIFE_DIR" config user.name "orchd-test"
+git -C "$LIFE_DIR" config user.email "test@orchd.dev"
+git -C "$LIFE_DIR" commit --allow-empty -m "init" -q
+
+assert_exit_0 "init lifecycle repo succeeds" "$ORCHD" init "$LIFE_DIR"
+LIFE_BASE_BRANCH=$(get_base_branch "$LIFE_DIR")
+printf '\ncustom_runner_cmd = "true"\n' >>"$LIFE_DIR/.orchd.toml"
+
+# await --all should wait while at least one running task still has a live agent.
+mkdir -p "$LIFE_DIR/.orchd/tasks/await-stale" "$LIFE_DIR/.orchd/tasks/await-live"
+printf 'running\n' >"$LIFE_DIR/.orchd/tasks/await-stale/status"
+printf 'orchd-test-await-stale\n' >"$LIFE_DIR/.orchd/tasks/await-stale/session"
+printf 'running\n' >"$LIFE_DIR/.orchd/tasks/await-live/status"
+printf 'orchd-test-await-live\n' >"$LIFE_DIR/.orchd/tasks/await-live/session"
+printf '0\n' >"$LIFE_DIR/.orchd/logs/await-stale.exit"
+tmux new -d -s "orchd-test-await-stale" "sleep 120"
+tmux new -d -s "orchd-test-await-live" "sleep 120"
+
+STATE_JSON=$(run_in_dir "$LIFE_DIR" "$ORCHD" state --json)
+if printf '%s' "$STATE_JSON" | grep -q '"running":1' && printf '%s' "$STATE_JSON" | grep -q '"effective_status":"stale"'; then
+	pass "state normalizes live running count and stale effective status"
+else
+	fail "state normalizes live running count and stale effective status"
+fi
+
+AWAIT_TIMEOUT_EVENT=""
+AWAIT_TIMEOUT_RC=0
+set +e
+AWAIT_TIMEOUT_EVENT=$(run_in_dir "$LIFE_DIR" "$ORCHD" await --all --poll 1 --timeout 2 --json 2>/dev/null)
+AWAIT_TIMEOUT_RC=$?
+set -e
+if ((AWAIT_TIMEOUT_RC != 0)) && printf '%s' "$AWAIT_TIMEOUT_EVENT" | grep -q '"event":"timeout"'; then
+	pass "await waits for live running agents"
+else
+	fail "await waits for live running agents"
+fi
+
+tmux kill-session -t "orchd-test-await-live" 2>/dev/null || true
+AWAIT_EXIT_EVENT=$(run_in_dir "$LIFE_DIR" "$ORCHD" await --all --poll 1 --timeout 2 --json 2>/dev/null || true)
+if printf '%s' "$AWAIT_EXIT_EVENT" | grep -q '"event":"agent_exited"'; then
+	pass "await surfaces stale running task once no live agents remain"
+else
+	fail "await surfaces stale running task once no live agents remain"
+fi
+
+# reconcile should clean stale live sessions for terminal statuses.
+mkdir -p "$LIFE_DIR/.orchd/tasks/reconcile-stale"
+printf 'failed\n' >"$LIFE_DIR/.orchd/tasks/reconcile-stale/status"
+printf 'orchd-test-reconcile-stale\n' >"$LIFE_DIR/.orchd/tasks/reconcile-stale/session"
+tmux new -d -s "orchd-test-reconcile-stale" "sleep 120"
+assert_exit_0 "reconcile exits 0" run_in_dir "$LIFE_DIR" "$ORCHD" reconcile
+if tmux has-session -t "orchd-test-reconcile-stale" 2>/dev/null; then
+	fail "reconcile cleans stale terminal session"
+else
+	pass "reconcile cleans stale terminal session"
+fi
+
+# resume should kill stale tmux session before relaunching.
+mkdir -p "$LIFE_DIR/.worktrees"
+run_in_dir "$LIFE_DIR" git worktree add -q -b "agent-resume-stale" "$LIFE_DIR/.worktrees/agent-resume-stale" "$LIFE_BASE_BRANCH"
+mkdir -p "$LIFE_DIR/.orchd/tasks/resume-stale"
+printf 'failed\n' >"$LIFE_DIR/.orchd/tasks/resume-stale/status"
+printf '%s\n' "$LIFE_DIR/.worktrees/agent-resume-stale" >"$LIFE_DIR/.orchd/tasks/resume-stale/worktree"
+printf 'custom\n' >"$LIFE_DIR/.orchd/tasks/resume-stale/runner"
+printf 'orchd-agent-resume-stale\n' >"$LIFE_DIR/.orchd/tasks/resume-stale/session"
+tmux new -d -s "orchd-agent-resume-stale" "sleep 120"
+assert_exit_0 "resume cleans stale session and relaunches" run_in_dir "$LIFE_DIR" "$ORCHD" resume "resume-stale" "stale session retry"
+assert_task_status "resume leaves task running" "$LIFE_DIR" "resume-stale" "running"
+
+# check should not fail solely due missing ORCHD_EXIT marker when other gates pass.
+run_in_dir "$LIFE_DIR" git checkout -q "$LIFE_BASE_BRANCH"
+run_in_dir "$LIFE_DIR" git checkout -q -b "agent-check-missing-exit"
+printf 'check-missing-exit\n' >"$LIFE_DIR/check_missing_exit.txt"
+run_in_dir "$LIFE_DIR" git add "check_missing_exit.txt"
+run_in_dir "$LIFE_DIR" git commit -q -m "test: check missing exit"
+run_in_dir "$LIFE_DIR" git checkout -q "$LIFE_BASE_BRANCH"
+run_in_dir "$LIFE_DIR" git worktree add -q "$LIFE_DIR/.worktrees/agent-check-missing-exit" "agent-check-missing-exit"
+cat >"$LIFE_DIR/.worktrees/agent-check-missing-exit/TASK_REPORT.md" <<'EOF'
+Summary
+
+EVIDENCE:
+- CMD: true
+  RESULT: PASS
+  OUTPUT: ok
+
+Rollback: revert commit if regression appears.
+EOF
+mkdir -p "$LIFE_DIR/.orchd/tasks/check-missing-exit"
+printf 'failed\n' >"$LIFE_DIR/.orchd/tasks/check-missing-exit/status"
+printf 'agent-check-missing-exit\n' >"$LIFE_DIR/.orchd/tasks/check-missing-exit/branch"
+printf '%s\n' "$LIFE_DIR/.worktrees/agent-check-missing-exit" >"$LIFE_DIR/.orchd/tasks/check-missing-exit/worktree"
+assert_exit_0 "check passes with missing exit marker when quality gates pass" run_in_dir "$LIFE_DIR" "$ORCHD" check "check-missing-exit"
+assert_task_status "check marks task done when exit marker missing" "$LIFE_DIR" "check-missing-exit" "done"
+
+# check should parse structured needs_input payloads.
+run_in_dir "$LIFE_DIR" git checkout -q "$LIFE_BASE_BRANCH"
+run_in_dir "$LIFE_DIR" git checkout -q -b "agent-check-needs-json"
+printf 'check-needs-json\n' >"$LIFE_DIR/check_needs_json.txt"
+run_in_dir "$LIFE_DIR" git add "check_needs_json.txt"
+run_in_dir "$LIFE_DIR" git commit -q -m "test: check needs input json"
+run_in_dir "$LIFE_DIR" git checkout -q "$LIFE_BASE_BRANCH"
+run_in_dir "$LIFE_DIR" git worktree add -q "$LIFE_DIR/.worktrees/agent-check-needs-json" "agent-check-needs-json"
+cat >"$LIFE_DIR/.worktrees/agent-check-needs-json/.orchd_needs_input.json" <<'EOF'
+{
+  "code": "decision_required",
+  "summary": "Need product direction before continuing",
+  "question": "Should we use provider A or provider B?",
+  "blocking": true,
+  "options": ["provider_a", "provider_b"]
+}
+EOF
+mkdir -p "$LIFE_DIR/.orchd/tasks/check-needs-json"
+printf 'running\n' >"$LIFE_DIR/.orchd/tasks/check-needs-json/status"
+printf 'agent-check-needs-json\n' >"$LIFE_DIR/.orchd/tasks/check-needs-json/branch"
+printf '%s\n' "$LIFE_DIR/.worktrees/agent-check-needs-json" >"$LIFE_DIR/.orchd/tasks/check-needs-json/worktree"
+assert_exit_0 "check parses .orchd_needs_input.json" run_in_dir "$LIFE_DIR" "$ORCHD" check "check-needs-json"
+assert_task_status "check marks task needs_input from JSON artifact" "$LIFE_DIR" "check-needs-json" "needs_input"
+STATE_NEEDS_JSON=$(run_in_dir "$LIFE_DIR" "$ORCHD" state --json)
+if printf '%s' "$STATE_NEEDS_JSON" | grep -q '"source":"json"' && printf '%s' "$STATE_NEEDS_JSON" | grep -q '"code":"decision_required"'; then
+	pass "state exposes structured needs_input payload"
+else
+	fail "state exposes structured needs_input payload"
+fi
+
+printf '\n[19] Help includes new commands\n'
 assert_output_contains "help shows memory" "memory" "$ORCHD" --help
 assert_output_contains "help shows idea" "idea" "$ORCHD" --help
 assert_output_contains "help shows fleet" "fleet" "$ORCHD" --help
 
-printf '\n[19] Ideate (autonomous backlog)\n'
+printf '\n[20] Ideate (autonomous backlog)\n'
 assert_exit_0 "ideate --help exits 0" "$ORCHD" ideate --help
 assert_output_contains "autopilot help shows continuous" "--continuous" "$ORCHD" autopilot --help
 

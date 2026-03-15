@@ -12,8 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Build orchd-tui
+        run: go build ./cmd/orchd-tui
+      - name: Cross-build orchd-tui (Windows)
+        run: GOOS=windows GOARCH=amd64 go build ./cmd/orchd-tui
       - name: Lint all shell scripts
         run: |
           shellcheck --exclude=SC1091 \
@@ -49,6 +57,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
       - name: Install tmux (Ubuntu)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y tmux
@@ -60,6 +72,8 @@ jobs:
           fi
       - name: Make scripts executable
         run: chmod +x bin/orchd tests/config_get.sh tests/smoke.sh
+      - name: Run Go tests
+        run: go test ./...
       - name: Run config_get regression tests
         run: ./tests/config_get.sh
       - name: Run smoke tests

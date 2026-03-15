@@ -19,6 +19,9 @@ cmd_fleet() {
 usage:
   orchd fleet list                   List configured fleet projects
   orchd fleet autopilot              Start autopilot daemon for all projects
+  orchd fleet autopilot --ai-orchestrated [poll]
+  orchd fleet autopilot --deterministic [poll]
+  orchd fleet autopilot [--continuous] [poll]
   orchd fleet status                 Show autopilot status for all projects
   orchd fleet stop                   Stop all fleet autopilot daemons
   orchd fleet brief                  Summary of what happened (last 24h)
@@ -77,6 +80,32 @@ _fleet_trim_edges() {
 	printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
+_fleet_project_autopilot_mode() {
+	local proj_path=$1
+	local prev_project_root="${PROJECT_ROOT:-}"
+	PROJECT_ROOT="$proj_path"
+	local mode
+	mode=$(config_get "orchestrator.autopilot_mode" "ai")
+	if [[ -n "$prev_project_root" ]]; then
+		PROJECT_ROOT="$prev_project_root"
+	else
+		unset PROJECT_ROOT
+	fi
+
+	mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
+	case "$mode" in
+	ai | ai-orchestrated | "")
+		printf 'ai\n'
+		;;
+	deterministic | classic | legacy)
+		printf 'deterministic\n'
+		;;
+	*)
+		printf 'ai\n'
+		;;
+	esac
+}
+
 _fleet_list() {
 	_fleet_require_config
 
@@ -101,19 +130,22 @@ _fleet_list() {
 		[[ -z "$proj_id" ]] && continue
 
 		local status="--"
+		local mode="ai"
 		if [[ ! -d "$proj_path" ]]; then
 			status="missing"
 		elif [[ ! -f "$proj_path/.orchd.toml" ]]; then
 			status="not initialized"
 		elif [[ -f "$proj_path/.orchd/autopilot.pid" ]]; then
+			mode=$(_fleet_project_autopilot_mode "$proj_path")
 			local pid
 			pid=$(cat "$proj_path/.orchd/autopilot.pid" 2>/dev/null || true)
 			if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
-				status="running (pid $pid)"
+				status="running ($mode, pid $pid)"
 			else
-				status="idle (stale pid)"
+				status="idle (stale pid, $mode)"
 			fi
 		else
+			mode=$(_fleet_project_autopilot_mode "$proj_path")
 			status="idle"
 		fi
 
@@ -128,7 +160,33 @@ _fleet_autopilot() {
 	projects=$(fleet_list_projects) || die "no projects configured"
 	[[ -n "$projects" ]] || die "no projects configured"
 
-	local poll_interval="${1:-}"
+	local poll_interval=""
+	local engine_override=""
+	local continuous=false
+
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--ai-orchestrated | --ai)
+			engine_override="ai"
+			shift
+			;;
+		--deterministic | --classic)
+			engine_override="deterministic"
+			shift
+			;;
+		--continuous)
+			continuous=true
+			shift
+			;;
+		[0-9]*)
+			poll_interval="$1"
+			shift
+			;;
+		*)
+			die "unknown fleet autopilot argument: $1"
+			;;
+		esac
+	done
 
 	local started=0 skipped=0 errors=0
 	local proj_id proj_path
@@ -165,9 +223,24 @@ _fleet_autopilot() {
 		local pid_file="$proj_path/.orchd/autopilot.pid"
 		mkdir -p "$proj_path/.orchd"
 
+		local mode
+		if [[ -n "$engine_override" ]]; then
+			mode="$engine_override"
+		else
+			mode=$(_fleet_project_autopilot_mode "$proj_path")
+		fi
+
 		local daemon_args="autopilot"
+		if [[ "$mode" == "deterministic" ]]; then
+			daemon_args+=" --deterministic"
+		else
+			daemon_args+=" --ai-orchestrated"
+		fi
+		if [[ "$continuous" == "true" ]]; then
+			daemon_args+=" --continuous"
+		fi
 		if [[ -n "$poll_interval" ]]; then
-			daemon_args="autopilot $poll_interval"
+			daemon_args+=" $poll_interval"
 		fi
 
 		# shellcheck disable=SC2086
@@ -180,7 +253,7 @@ _fleet_autopilot() {
 			local new_pid
 			new_pid=$(cat "$pid_file" 2>/dev/null || true)
 			if [[ -n "$new_pid" ]] && kill -0 "$new_pid" >/dev/null 2>&1; then
-				printf '  [START] %s: autopilot started (pid %s)\n' "$proj_id" "$new_pid"
+				printf '  [START] %s: autopilot started (%s, pid %s)\n' "$proj_id" "$mode" "$new_pid"
 				started=$((started + 1))
 			else
 				printf '  [ERROR] %s: autopilot exited immediately\n' "$proj_id"
@@ -203,8 +276,8 @@ _fleet_status() {
 	projects=$(fleet_list_projects) || die "no projects configured"
 	[[ -n "$projects" ]] || die "no projects configured"
 
-	printf '%-20s %-12s %-8s %s\n' "PROJECT" "AUTOPILOT" "TASKS" "DETAIL"
-	printf '%-20s %-12s %-8s %s\n' "---" "---" "---" "---"
+	printf '%-20s %-12s %-14s %-8s %s\n' "PROJECT" "AUTOPILOT" "MODE" "TASKS" "DETAIL"
+	printf '%-20s %-12s %-14s %-8s %s\n' "---" "---" "---" "---" "---"
 
 	local proj_id proj_path
 	while IFS=$'\t' read -r proj_id proj_path; do
@@ -212,12 +285,16 @@ _fleet_status() {
 		proj_path=$(_fleet_trim_edges "$proj_path")
 		[[ -z "$proj_id" ]] && continue
 
-		local ap_status="--" task_info="--" detail=""
+		local ap_status="--" mode="--" task_info="--" detail=""
 
 		if [[ ! -d "$proj_path" ]]; then
 			ap_status="missing"
-			printf '%-20s %-12s %-8s %s\n' "$proj_id" "$ap_status" "--" "directory not found"
+			printf '%-20s %-12s %-14s %-8s %s\n' "$proj_id" "$ap_status" "$mode" "--" "directory not found"
 			continue
+		fi
+
+		if [[ -f "$proj_path/.orchd.toml" ]]; then
+			mode=$(_fleet_project_autopilot_mode "$proj_path")
 		fi
 
 		# Autopilot status
@@ -259,7 +336,7 @@ _fleet_status() {
 			fi
 		fi
 
-		printf '%-20s %-12s %-8s %s\n' "$proj_id" "$ap_status" "$task_info" "$detail"
+		printf '%-20s %-12s %-14s %-8s %s\n' "$proj_id" "$ap_status" "$mode" "$task_info" "$detail"
 	done <<<"$projects"
 }
 
@@ -314,8 +391,8 @@ _fleet_brief() {
 	cutoff_iso=$(date -u -d "$hours hours ago" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-"${hours}"H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "")
 
 	printf 'Fleet Brief (last %dh)\n\n' "$hours"
-	printf '%-20s %-8s %-8s %-8s %-12s %s\n' "PROJECT" "MERGED" "FAILED" "NEEDS" "STATUS" "QUEUE"
-	printf '%-20s %-8s %-8s %-8s %-12s %s\n' "---" "---" "---" "---" "---" "---"
+	printf '%-20s %-8s %-8s %-8s %-12s %-14s %s\n' "PROJECT" "MERGED" "FAILED" "NEEDS" "STATUS" "MODE" "QUEUE"
+	printf '%-20s %-8s %-8s %-8s %-12s %-14s %s\n' "---" "---" "---" "---" "---" "---" "---"
 
 	local proj_id proj_path
 	while IFS=$'\t' read -r proj_id proj_path; do
@@ -323,11 +400,15 @@ _fleet_brief() {
 		proj_path=$(_fleet_trim_edges "$proj_path")
 		[[ -z "$proj_id" ]] && continue
 
-		local merged=0 failed=0 needs=0 ap_status="idle" queue_count=0
+		local merged=0 failed=0 needs=0 ap_status="idle" mode="--" queue_count=0
 
 		if [[ ! -d "$proj_path" ]]; then
-			printf '%-20s %-8s %-8s %-8s %-12s %s\n' "$proj_id" "--" "--" "--" "missing" "--"
+			printf '%-20s %-8s %-8s %-8s %-12s %-14s %s\n' "$proj_id" "--" "--" "--" "missing" "--" "--"
 			continue
+		fi
+
+		if [[ -f "$proj_path/.orchd.toml" ]]; then
+			mode=$(_fleet_project_autopilot_mode "$proj_path")
 		fi
 
 		# Parse orchd.log for recent events
@@ -373,7 +454,7 @@ _fleet_brief() {
 			queue_count=$(awk '/^- \[ \]/ { c++ } END { print c+0 }' "$qf")
 		fi
 
-		printf '%-20s %-8d %-8d %-8d %-12s %d\n' "$proj_id" "$merged" "$failed" "$needs" "$ap_status" "$queue_count"
+		printf '%-20s %-8d %-8d %-8d %-12s %-14s %d\n' "$proj_id" "$merged" "$failed" "$needs" "$ap_status" "$mode" "$queue_count"
 	done <<<"$projects"
 
 	printf '\nconfig: %s\n' "$(fleet_config_file)"

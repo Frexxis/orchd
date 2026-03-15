@@ -27,6 +27,7 @@ notes:
   - --runner overrides the configured/auto-detected runner for planning only
   - plan output must follow the TASK/TITLE/ROLE/DEPS/DESCRIPTION/ACCEPTANCE format
   - optional per-task overrides: LINT_CMD, TEST_CMD, BUILD_CMD
+  - optional execution mode flags: EXECUTION_ONLY, NO_PLANNING, COMMIT_REQUIRED
 EOF
 		return 0
 	fi
@@ -219,12 +220,98 @@ EOF
 
 # --- Extract text content from JSONL (codex output) ---
 _extract_text_from_jsonl() {
+	local raw tmp
+	raw=$(mktemp)
+	tmp=$(mktemp)
+	cat >"$raw"
+
 	if command -v jq >/dev/null 2>&1; then
-		jq -r 'select(.type=="item.completed" and (.item.type=="agent_message" or .item.type=="assistant_message")) | .item.text // empty' 2>/dev/null
-	else
-		# Fallback: portable sed (no grep -oP, which is unavailable on macOS)
-		sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null || cat
+		# Primary: known codex JSONL schema (item.completed -> item.text)
+		jq -r '
+			select(.type=="item.completed")
+			| .item
+			| (
+				.text? //
+				(.content? // empty | if type=="array" then .[] | .text? // empty else empty end)
+			)
+			| select(type=="string" and length>0)
+		' 2>/dev/null <"$raw" >"$tmp" || true
 	fi
+
+	# If jq didn't yield anything useful, fall back to a tolerant parser.
+	if [[ -s "$tmp" ]] && grep -q '[^[:space:]]' "$tmp" 2>/dev/null; then
+		cat "$tmp"
+		rm -f "$raw" "$tmp"
+		return 0
+	fi
+	rm -f "$tmp"
+
+	if command -v python3 >/dev/null 2>&1; then
+		python3 - "$raw" <<'PY'
+import json
+import sys
+
+complete = []
+deltas = []
+
+def add_complete(s):
+    if isinstance(s, str) and s.strip():
+        complete.append(s)
+
+def add_delta(s):
+    if isinstance(s, str) and s:
+        deltas.append(s)
+
+raw_path = sys.argv[1]
+with open(raw_path, "r", encoding="utf-8", errors="ignore") as f:
+    for line in f:
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+
+        if not isinstance(obj, dict):
+            continue
+
+        t = obj.get("type", "")
+
+        # Common: {"type":"item.completed","item":{"text":...}}
+        item = obj.get("item")
+        if isinstance(item, dict):
+            add_complete(item.get("text"))
+            content = item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        add_complete(part.get("text"))
+
+        # Some tools emit top-level text
+        add_complete(obj.get("text"))
+
+        # Streaming-style events (best-effort)
+        if isinstance(t, str) and t.endswith(".delta"):
+            add_delta(obj.get("delta"))
+        if isinstance(t, str) and t.endswith(".done"):
+            add_complete(obj.get("output_text"))
+            add_complete(obj.get("delta"))
+
+out = "\n".join(s for s in complete if isinstance(s, str) and s.strip())
+if not out:
+    out = "".join(deltas).strip()
+
+if out:
+    sys.stdout.write(out)
+PY
+		rm -f "$raw"
+		return 0
+	fi
+
+	# Last resort: portable sed extract (may be noisy)
+	sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null <"$raw" || cat "$raw"
+	rm -f "$raw"
 }
 
 # --- Parse TASK blocks from plan output ---
@@ -257,6 +344,9 @@ _parse_plan_output() {
 		LINT_CMD:*) keyword="LINT_CMD" ;;
 		TEST_CMD:*) keyword="TEST_CMD" ;;
 		BUILD_CMD:*) keyword="BUILD_CMD" ;;
+		EXECUTION_ONLY:*) keyword="EXECUTION_ONLY" ;;
+		NO_PLANNING:*) keyword="NO_PLANNING" ;;
+		COMMIT_REQUIRED:*) keyword="COMMIT_REQUIRED" ;;
 		esac
 
 		if [[ -n "$keyword" ]]; then
@@ -276,6 +366,9 @@ _parse_plan_output() {
 				if [[ -n "$current_id" ]]; then
 					mkdir -p "$TASKS_DIR/$current_id"
 					task_set "$current_id" "status" "pending"
+					task_set "$current_id" "execution_only" "false"
+					task_set "$current_id" "no_planning" "false"
+					task_set "$current_id" "commit_required" "false"
 					count=$((count + 1))
 				fi
 				;;
@@ -317,6 +410,15 @@ _parse_plan_output() {
 				fi
 				[[ -n "$current_id" ]] && task_set "$current_id" "build_cmd" "$val"
 				;;
+			EXECUTION_ONLY)
+				[[ -n "$current_id" ]] && task_set "$current_id" "execution_only" "$(_plan_bool "$val")"
+				;;
+			NO_PLANNING)
+				[[ -n "$current_id" ]] && task_set "$current_id" "no_planning" "$(_plan_bool "$val")"
+				;;
+			COMMIT_REQUIRED)
+				[[ -n "$current_id" ]] && task_set "$current_id" "commit_required" "$(_plan_bool "$val")"
+				;;
 			esac
 		else
 			# Non-keyword line: append to active multi-line field (preserve blank lines)
@@ -351,6 +453,19 @@ _parse_plan_output() {
 	printf '\nparsed %d tasks:\n\n' "$count"
 	_print_task_table
 	printf '\nnext: orchd spawn --all  (or orchd spawn <task-id>)\n'
+}
+
+_plan_bool() {
+	local raw=${1:-}
+	raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	case "$raw" in
+	1 | true | yes | y | on)
+		printf 'true\n'
+		;;
+	*)
+		printf 'false\n'
+		;;
+	esac
 }
 
 # --- Print task table ---

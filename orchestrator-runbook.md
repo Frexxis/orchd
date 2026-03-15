@@ -102,21 +102,32 @@ echo "OK: exec+resume works (thread_id=$THREAD_ID)"
 
 ### 3.5 Optional "Always-On" Loop (recommended)
 
-If the orchestrator needs to continue without manual prompts, prefer the built-in daemon:
+If the orchestrator needs to continue without manual prompts, prefer the supervised AI loop:
 
 ```bash
-orchd autopilot --daemon 30
+orchd orchestrate --daemon 30
+```
+
+This keeps an AI orchestrator alive under supervisor control. If the agent stops before the project reaches a terminal state, orchd rebuilds state, injects a system reminder, and reinvokes it.
+
+With `opencode`, set `orchestrator.session_mode = "sticky"` (or keep `auto`) to inject reminders into the same live session (oh-my-openagent-style continuation).
+
+For a deterministic built-in loop, use autopilot's deterministic engine explicitly:
+
+```bash
+orchd autopilot --deterministic --daemon 30
 ```
 
 For fully autonomous development (no human backlog entry), run continuous mode:
 
 ```bash
-orchd autopilot --daemon --continuous 30
+orchd autopilot --deterministic --daemon --continuous 30
 ```
 
 Continuous mode uses `orchd ideate` when the idea queue is empty to generate the next backlog from `docs/memory/` and the codebase. It stops only when ideation returns `PROJECT_COMPLETE`.
 
-Use `orchd autopilot --status|--logs|--stop` to monitor or stop the loop.
+Use `orchd orchestrate --status|--logs|--stop` for supervised AI mode,
+or `orchd autopilot --status|--logs|--stop` for deterministic mode.
 
 If you only need a passive repo monitor, a tmux loop is sufficient.
 

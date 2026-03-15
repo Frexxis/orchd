@@ -143,6 +143,24 @@ config_get_int() {
 	fi
 }
 
+is_truthy() {
+	local v=${1:-}
+	local vl
+	vl=$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')
+	case "$vl" in
+	"" | 1 | true | yes | on)
+		return 0
+		;;
+	0 | false | no | off)
+		return 1
+		;;
+	*)
+		# Default to true for unknown values to keep behavior permissive.
+		return 0
+		;;
+	esac
+}
+
 # --- Task state management ---
 
 task_dir() {
@@ -173,6 +191,28 @@ task_get() {
 	fi
 }
 
+normalize_bool_false() {
+	local raw=${1:-}
+	raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	case "$raw" in
+	1 | true | yes | y | on)
+		printf 'true\n'
+		;;
+	*)
+		printf 'false\n'
+		;;
+	esac
+}
+
+task_get_bool() {
+	local task_id=$1
+	local key=$2
+	local default=${3:-false}
+	local raw
+	raw=$(task_get "$task_id" "$key" "$default")
+	normalize_bool_false "$raw"
+}
+
 task_exists() {
 	local task_id=$1
 	[[ -d "$(task_dir "$task_id")" ]]
@@ -191,6 +231,248 @@ task_list_ids() {
 task_status() {
 	local task_id=$1
 	task_get "$task_id" "status" "pending"
+}
+
+# Runtime lifecycle probe for a task.
+# Sets global variables for callers:
+# - TASK_RUNTIME_STATUS: persisted status value
+# - TASK_RUNTIME_AGENT_ALIVE: true|false (runner process considered alive)
+# - TASK_RUNTIME_SESSION_PRESENT: true|false (tmux session exists)
+# - TASK_RUNTIME_STALE_RUNNING: true|false (status=running but agent not alive)
+# - TASK_RUNTIME_STALE_SESSION: true|false (terminal/stale status with live tmux session)
+# - TASK_RUNTIME_EFFECTIVE_STATUS: status with stale-running normalization
+task_runtime_refresh() {
+	local task_id=$1
+
+	TASK_RUNTIME_STATUS=$(task_status "$task_id")
+	TASK_RUNTIME_AGENT_ALIVE=false
+	TASK_RUNTIME_SESSION_PRESENT=false
+	TASK_RUNTIME_STALE_RUNNING=false
+	TASK_RUNTIME_STALE_SESSION=false
+	TASK_RUNTIME_EFFECTIVE_STATUS="$TASK_RUNTIME_STATUS"
+
+	if declare -F runner_has_session >/dev/null 2>&1; then
+		if runner_has_session "$task_id"; then
+			TASK_RUNTIME_SESSION_PRESENT=true
+		fi
+	fi
+
+	if declare -F runner_is_alive >/dev/null 2>&1; then
+		if runner_is_alive "$task_id"; then
+			TASK_RUNTIME_AGENT_ALIVE=true
+		fi
+	fi
+
+	if [[ "$TASK_RUNTIME_STATUS" == "running" ]] && [[ "$TASK_RUNTIME_AGENT_ALIVE" != "true" ]]; then
+		TASK_RUNTIME_STALE_RUNNING=true
+		TASK_RUNTIME_EFFECTIVE_STATUS="stale"
+	fi
+
+	case "$TASK_RUNTIME_STATUS" in
+	done | merged | failed | conflict | needs_input)
+		if [[ "$TASK_RUNTIME_SESSION_PRESENT" == "true" ]]; then
+			TASK_RUNTIME_STALE_SESSION=true
+		fi
+		;;
+	running)
+		if [[ "$TASK_RUNTIME_SESSION_PRESENT" == "true" ]] && [[ "$TASK_RUNTIME_AGENT_ALIVE" != "true" ]]; then
+			TASK_RUNTIME_STALE_SESSION=true
+		fi
+		;;
+	esac
+}
+
+task_is_running_live() {
+	local task_id=$1
+	task_runtime_refresh "$task_id"
+	[[ "$TASK_RUNTIME_STATUS" == "running" ]] && [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]
+}
+
+task_prepare_new_attempt() {
+	local task_id=$1
+	task_set "$task_id" "status" "running"
+	task_set "$task_id" "needs_input_at" ""
+	task_set "$task_id" "checked_at" ""
+	task_set "$task_id" "check_passed" ""
+	task_set "$task_id" "check_total" ""
+	task_set "$task_id" "check_skipped" ""
+	task_set "$task_id" "check_failed" ""
+	task_set "$task_id" "last_check_file" ""
+	task_set "$task_id" "last_failure_reason" ""
+	task_set "$task_id" "agent_exit_code" ""
+	task_set "$task_id" "runner_metadata_missing" ""
+	task_clear_needs_input "$task_id"
+}
+
+task_clear_needs_input() {
+	local task_id=$1
+	task_set "$task_id" "needs_input_source" ""
+	task_set "$task_id" "needs_input_file" ""
+	task_set "$task_id" "needs_input_code" ""
+	task_set "$task_id" "needs_input_summary" ""
+	task_set "$task_id" "needs_input_question" ""
+	task_set "$task_id" "needs_input_blocking" ""
+	task_set "$task_id" "needs_input_options" ""
+	task_set "$task_id" "needs_input_error" ""
+}
+
+task_mark_needs_input() {
+	local task_id=$1
+	local source=${2:-system}
+	local summary=${3:-}
+	local code=${4:-}
+	local question=${5:-}
+	local blocking=${6:-true}
+	local options=${7:-}
+	local artifact_file=${8:-}
+
+	task_set "$task_id" "status" "needs_input"
+	task_set "$task_id" "needs_input_at" "$(now_iso)"
+	task_set "$task_id" "needs_input_source" "$source"
+	task_set "$task_id" "needs_input_file" "$artifact_file"
+	task_set "$task_id" "needs_input_code" "$code"
+	task_set "$task_id" "needs_input_summary" "$summary"
+	task_set "$task_id" "needs_input_question" "$question"
+	task_set "$task_id" "needs_input_blocking" "$blocking"
+	task_set "$task_id" "needs_input_options" "$options"
+	task_set "$task_id" "needs_input_error" ""
+}
+
+# Detect and parse worker needs_input artifacts.
+# Populates global variables:
+# - ORCHD_NEEDS_INPUT_PRESENT: true|false
+# - ORCHD_NEEDS_INPUT_SOURCE: json|markdown|blocker
+# - ORCHD_NEEDS_INPUT_FILE: absolute file path (if present)
+# - ORCHD_NEEDS_INPUT_CODE
+# - ORCHD_NEEDS_INPUT_SUMMARY
+# - ORCHD_NEEDS_INPUT_QUESTION
+# - ORCHD_NEEDS_INPUT_BLOCKING: true|false
+# - ORCHD_NEEDS_INPUT_OPTIONS: option list joined by " | "
+# - ORCHD_NEEDS_INPUT_ERROR: parser error (for malformed JSON)
+needs_input_detect() {
+	local worktree=$1
+	ORCHD_NEEDS_INPUT_PRESENT=false
+	ORCHD_NEEDS_INPUT_SOURCE=""
+	ORCHD_NEEDS_INPUT_FILE=""
+	ORCHD_NEEDS_INPUT_CODE=""
+	ORCHD_NEEDS_INPUT_SUMMARY=""
+	ORCHD_NEEDS_INPUT_QUESTION=""
+	ORCHD_NEEDS_INPUT_BLOCKING="true"
+	ORCHD_NEEDS_INPUT_OPTIONS=""
+	ORCHD_NEEDS_INPUT_ERROR=""
+
+	local json_file="$worktree/.orchd_needs_input.json"
+	local md_file="$worktree/.orchd_needs_input.md"
+	local blocker_file="$worktree/BLOCKER.md"
+
+	if [[ -f "$json_file" ]]; then
+		ORCHD_NEEDS_INPUT_PRESENT=true
+		ORCHD_NEEDS_INPUT_SOURCE="json"
+		ORCHD_NEEDS_INPUT_FILE="$json_file"
+		_needs_input_parse_json "$json_file"
+		return 0
+	fi
+
+	if [[ -f "$md_file" ]]; then
+		ORCHD_NEEDS_INPUT_PRESENT=true
+		ORCHD_NEEDS_INPUT_SOURCE="markdown"
+		ORCHD_NEEDS_INPUT_FILE="$md_file"
+		ORCHD_NEEDS_INPUT_SUMMARY="$(head -n 1 "$md_file" 2>/dev/null || true)"
+		ORCHD_NEEDS_INPUT_QUESTION="$ORCHD_NEEDS_INPUT_SUMMARY"
+		return 0
+	fi
+
+	if [[ -f "$blocker_file" ]]; then
+		ORCHD_NEEDS_INPUT_PRESENT=true
+		ORCHD_NEEDS_INPUT_SOURCE="blocker"
+		ORCHD_NEEDS_INPUT_FILE="$blocker_file"
+		ORCHD_NEEDS_INPUT_SUMMARY="$(head -n 1 "$blocker_file" 2>/dev/null || true)"
+		ORCHD_NEEDS_INPUT_QUESTION="$ORCHD_NEEDS_INPUT_SUMMARY"
+		return 0
+	fi
+}
+
+_needs_input_parse_json() {
+	local json_file=$1
+	if ! command -v python3 >/dev/null 2>&1; then
+		ORCHD_NEEDS_INPUT_ERROR="python3 unavailable; cannot parse needs_input JSON"
+		return 1
+	fi
+
+	local parsed
+	parsed=$(
+		python3 - "$json_file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as exc:
+    print(f"error\t{str(exc).replace(chr(10), ' ')}")
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    print("error\ttop-level JSON must be an object")
+    sys.exit(0)
+
+def norm(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value.replace("\n", " ").replace("\t", " ").strip()
+    return str(value).replace("\n", " ").replace("\t", " ").strip()
+
+options = data.get("options", [])
+if isinstance(options, list):
+    option_values = [norm(x) for x in options if norm(x)]
+    options_text = " | ".join(option_values)
+else:
+    options_text = norm(options)
+
+print(f"code\t{norm(data.get('code', ''))}")
+print(f"summary\t{norm(data.get('summary', ''))}")
+print(f"question\t{norm(data.get('question', ''))}")
+print(f"blocking\t{norm(data.get('blocking', True))}")
+print(f"options\t{options_text}")
+PY
+	)
+
+	local key value
+	while IFS=$'\t' read -r key value; do
+		case "$key" in
+		error)
+			ORCHD_NEEDS_INPUT_ERROR="$value"
+			;;
+		code)
+			ORCHD_NEEDS_INPUT_CODE="$value"
+			;;
+		summary)
+			ORCHD_NEEDS_INPUT_SUMMARY="$value"
+			;;
+		question)
+			ORCHD_NEEDS_INPUT_QUESTION="$value"
+			;;
+		blocking)
+			if [[ "$value" == "true" || "$value" == "false" ]]; then
+				ORCHD_NEEDS_INPUT_BLOCKING="$value"
+			fi
+			;;
+		options)
+			ORCHD_NEEDS_INPUT_OPTIONS="$value"
+			;;
+		esac
+	done <<<"$parsed"
+
+	if [[ -z "$ORCHD_NEEDS_INPUT_SUMMARY" ]] && [[ -n "$ORCHD_NEEDS_INPUT_QUESTION" ]]; then
+		ORCHD_NEEDS_INPUT_SUMMARY="$ORCHD_NEEDS_INPUT_QUESTION"
+	fi
 }
 
 task_is_ready() {
@@ -462,7 +744,8 @@ A task is `done` only when ALL of these are true:
 
 ## Blocker Protocol
 
-- If blocked, create `.orchd_needs_input.md` at the worktree root explaining what is needed.
+- If blocked, create `.orchd_needs_input.json` at the worktree root with structured fields (`code`, `summary`, `question`, `blocking`, `options`).
+- You may also add `.orchd_needs_input.md` for extra human context.
 - If a dependency is missing, document it and exit cleanly.
 
 ## Required Deliverable
@@ -477,7 +760,7 @@ Create TASK_REPORT.md at the worktree root with:
 
 Notes:
 
-- Do not commit TASK_REPORT.md or .orchd_needs_input.md; they are treated as local artifacts.
+- Do not commit TASK_REPORT.md, .orchd_needs_input.json, or .orchd_needs_input.md; they are treated as local artifacts.
 - orchd archives TASK_REPORT.md into `.orchd/tasks/<task-id>/` during `orchd check`.
 EOF
 		;;
@@ -778,11 +1061,29 @@ quality_detect_cmds() {
 	if [[ -f "$repo_dir/pyproject.toml" ]] || [[ -f "$repo_dir/requirements.txt" ]] || [[ -f "$repo_dir/poetry.lock" ]]; then
 		stack_count=$((stack_count + 1))
 		local lint="" test="" build="" notes="" score=0
-		if command -v ruff >/dev/null 2>&1; then
+		local venv_dir venv_bin
+		venv_dir=$(config_get "python.venv_dir" ".venv")
+		venv_bin="$repo_dir/$venv_dir/bin"
+		if [[ -x "$venv_bin/ruff" ]]; then
+			lint="$venv_dir/bin/ruff check ."
+			score=$((score + 1))
+			notes="python: using venv ruff ($venv_dir)"
+		elif command -v ruff >/dev/null 2>&1; then
 			lint="ruff check ."
 			score=$((score + 1))
 		fi
-		if command -v pytest >/dev/null 2>&1; then
+		if [[ -x "$venv_bin/python" ]]; then
+			if [[ -x "$venv_bin/pytest" ]]; then
+				test="$venv_dir/bin/pytest"
+			else
+				test="$venv_dir/bin/python -m pytest"
+			fi
+			score=$((score + 1))
+			if [[ -n "$notes" ]]; then
+				notes+=$'\n'
+			fi
+			notes+="python: using venv python ($venv_dir)"
+		elif command -v pytest >/dev/null 2>&1; then
 			test="pytest"
 			score=$((score + 1))
 		fi
@@ -895,6 +1196,28 @@ quality_detect_cmds() {
 	if ((best_score == 0)) && [[ -n "$best_stack" ]]; then
 		quality_detect_note "no lint/test/build commands detected for $best_stack"
 	fi
+}
+
+worktree_link_python_venv() {
+	local worktree=$1
+	local venv_dir
+	venv_dir=$(config_get "python.venv_dir" ".venv")
+	local enabled
+	enabled=$(config_get "python.link_venv" "true")
+	if ! is_truthy "$enabled"; then
+		return 0
+	fi
+	[[ -n "$PROJECT_ROOT" ]] || return 0
+	local src="$PROJECT_ROOT/$venv_dir"
+	local dest="$worktree/$venv_dir"
+	if [[ ! -d "$src" ]]; then
+		return 0
+	fi
+	if [[ -e "$dest" ]]; then
+		return 0
+	fi
+	ln -s "$src" "$dest" 2>/dev/null || return 0
+	log_event "INFO" "worktree: linked venv ($venv_dir) into $(basename "$worktree")"
 }
 
 # --- Worktree management ---
@@ -1205,6 +1528,73 @@ memory_update_progress() {
 		[[ -z "$task_id" ]] && continue
 		total=$((total + 1))
 		status=$(task_status "$task_id")
+		local title
+		title=$(task_get "$task_id" "title" "$task_id")
+		case "$status" in
+		merged)
+			merged=$((merged + 1))
+			merged_list+="- [x] ${task_id}: ${title}"$'\n'
+			;;
+		failed)
+			failed=$((failed + 1))
+			failed_list+="- [!] ${task_id}: ${title}"$'\n'
+			;;
+		pending)
+			pending=$((pending + 1))
+			pending_list+="- [ ] ${task_id}: ${title}"$'\n'
+			;;
+		running) running=$((running + 1)) ;;
+		needs_input) needs_input=$((needs_input + 1)) ;;
+		esac
+	done <<<"$(task_list_ids)"
+
+	cat >"$mem_dir/progress.md" <<EOF
+# Progress
+
+*Last updated: ${ts}*
+
+## Summary
+- Total tasks: ${total}
+- Merged: ${merged}
+- Pending: ${pending}
+- Running: ${running}
+- Failed: ${failed}
+- Needs input: ${needs_input}
+
+## Completed (merged)
+${merged_list:-  (none yet)}
+
+## Remaining
+${pending_list:-  (none)}
+
+## Issues
+${failed_list:-  (none)}
+EOF
+}
+
+# Like memory_update_progress, but treats one task as if it has a different status.
+# This is used to generate accurate progress snapshots during merge before the task
+# status file is updated.
+memory_update_progress_override() {
+	local override_task_id=$1
+	local override_status=$2
+
+	local mem_dir
+	mem_dir=$(memory_dir)
+
+	local ts
+	ts=$(now_iso)
+
+	local total=0 merged=0 failed=0 pending=0 running=0 needs_input=0
+	local merged_list="" pending_list="" failed_list=""
+	local task_id status
+	while IFS= read -r task_id; do
+		[[ -z "$task_id" ]] && continue
+		total=$((total + 1))
+		status=$(task_status "$task_id")
+		if [[ -n "$override_task_id" ]] && [[ "$task_id" == "$override_task_id" ]]; then
+			status="$override_status"
+		fi
 		local title
 		title=$(task_get "$task_id" "title" "$task_id")
 		case "$status" in

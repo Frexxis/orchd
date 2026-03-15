@@ -42,6 +42,11 @@ Use these to understand current state, remaining work, constraints, and acceptan
 - `orchd state --json`: machine-friendly snapshot for decision making.
 - `orchd plan "<description>"`: AI-generated task DAG.
 - `orchd plan --file <path>` / `orchd plan --stdin`: import externally-produced task DAG.
+- `orchd orchestrate [poll]`: run the supervised AI orchestrator loop.
+- `orchestrator.session_mode = sticky`: for `opencode`, inject reminders into the same live session.
+- `orchd orchestrate --once`: run one orchestrator turn without the supervisor loop.
+- `orchd orchestrate --daemon [poll]`: keep the orchestrator alive in background.
+- `orchd orchestrate --status|--stop|--logs`: manage the orchestrator daemon.
 
 ## Task-Specific Quality Commands (Optional)
 
@@ -51,8 +56,10 @@ If present, `orchd check` will use them for that task (override > global config 
 - `orchd check --all`: evaluate completed/finished tasks.
 - `orchd merge --all`: integrate done tasks in dependency order.
 - `orchd resume <task-id> [reason]`: continue failed/stuck tasks.
-- `orchd autopilot`: run the built-in autonomous loop.
-- `orchd autopilot --continuous [poll]`: keep running until `PROJECT_COMPLETE` (ideate -> plan -> execute loop).
+- `orchd autopilot`: run the default supervised AI orchestrator loop.
+- `orchd autopilot --ai-orchestrated`: explicit supervised AI orchestrator mode.
+- `orchd autopilot --deterministic`: legacy deterministic spawn/check/merge loop.
+- `orchd autopilot --continuous [poll]`: compatibility flag (implicit in AI mode; meaningful in deterministic mode).
 - `orchd autopilot --daemon [poll]`: run autonomously in background (recommended for long runs).
 - `orchd autopilot --status|--stop|--logs`: manage the daemon.
 - `orchd ideate`: generate the next backlog from `docs/memory/` + codebase context.
@@ -62,9 +69,12 @@ If present, `orchd check` will use them for that task (override > global config 
 For fully autonomous project development:
 
 1. Define clear goals and scope in `docs/memory/projectbrief.md`.
-2. Start: `orchd autopilot --continuous` (or `--daemon --continuous` for background).
-3. orchd will: plan -> spawn -> check -> merge -> ideate -> plan -> ... until completion.
-4. orchd exits when ideation outputs `PROJECT_COMPLETE`.
+2. Start either:
+   - `orchd orchestrate --daemon 30` for an AI orchestrator that gets automatic system reminders and keeps resuming itself, or
+   - `orchd autopilot` (default supervised AI mode), or
+   - `orchd autopilot --deterministic --continuous` for the built-in deterministic loop.
+3. orchd will keep cycling through orchestration decisions until completion.
+4. Only stop when there is a genuine blocker or ideation outputs `PROJECT_COMPLETE`.
 
 ## Suggested Loop
 
@@ -74,8 +84,9 @@ For fully autonomous project development:
 4. Check finished tasks.
 5. Merge tasks that are `done` and dependency-ready.
 6. Retry/resume failed tasks with a focused reason.
-7. When waiting, use `orchd await --all` instead of `sleep`.
-8. Repeat until all tasks are terminal (`merged` or explicit blocker states).
+7. When using the supervised AI orchestrator, let `orchd orchestrate` handle waits and continuation reminders.
+8. Otherwise, when waiting manually, use `orchd await --all` instead of `sleep`.
+9. Repeat until all tasks are terminal (`merged` or explicit blocker states) or the project is complete.
 
 ## Decision Rules
 

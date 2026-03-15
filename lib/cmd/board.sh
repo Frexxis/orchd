@@ -35,7 +35,8 @@ _board_print() {
 
 		local title status
 		title=$(task_get "$task_id" "title" "-")
-		status=$(task_get "$task_id" "status" "pending")
+		task_runtime_refresh "$task_id"
+		status="$TASK_RUNTIME_STATUS"
 
 		# Truncate title
 		if ((${#title} > 26)); then
@@ -52,16 +53,16 @@ _board_print() {
 			pending=$((pending + 1))
 			;;
 		running)
-			if runner_is_alive "$task_id"; then
+			if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
 				status_text="run"
 				status_color="\033[32m"
 				status_reset="\033[0m"
+				running=$((running + 1))
 			else
 				status_text="stale"
 				status_color="\033[33m"
 				status_reset="\033[0m"
 			fi
-			running=$((running + 1))
 			;;
 		done)
 			status_text="done"
@@ -95,11 +96,15 @@ _board_print() {
 		# Agent info
 		local agent_text="-" agent_color="" agent_reset=""
 		local session_name
-		session_name=$(task_get "$task_id" "session" "")
+		session_name=$(runner_session_name "$task_id")
 		if [[ -n "$session_name" ]]; then
-			if tmux has-session -t "$session_name" 2>/dev/null; then
+			if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
 				agent_text="alive"
 				agent_color="\033[32m"
+				agent_reset="\033[0m"
+			elif [[ "$TASK_RUNTIME_SESSION_PRESENT" == "true" ]]; then
+				agent_text="stale"
+				agent_color="\033[33m"
 				agent_reset="\033[0m"
 			else
 				agent_text="exited"

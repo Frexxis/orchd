@@ -1,3 +1,12 @@
-.orchd/
-.worktrees/
+/.orchd/
+/.worktrees/
 *.bak
+/bin/orchd-tui
+/dist/
+/orchd-tui
+/orchd-tui.exe
+
+# Local agent artifacts (not committed)
+TASK_REPORT.md
+.orchd_needs_input.md
+BLOCKER.md

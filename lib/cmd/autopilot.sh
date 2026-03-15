@@ -7,24 +7,40 @@ cmd_autopilot() {
 	local mode="run"
 	local poll_interval=""
 	local continuous=false
+	local engine_override=""
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		-h | --help)
 			cat <<'EOF'
 usage:
-  orchd autopilot [poll_seconds]
-  orchd autopilot --continuous [poll_seconds]
-  orchd autopilot --daemon [poll_seconds]
-  orchd autopilot --daemon --continuous [poll_seconds]
-  orchd autopilot --status
-  orchd autopilot --stop
-  orchd autopilot --logs
+	 orchd autopilot [poll_seconds]
+	 orchd autopilot --daemon [poll_seconds]
+	 orchd autopilot --status
+	 orchd autopilot --stop
+	 orchd autopilot --logs
+
+engine selection:
+	 orchd autopilot                     # default: ai-orchestrated supervisor loop
+	 orchd autopilot --ai-orchestrated   # explicit ai orchestrator mode
+	 orchd autopilot --deterministic     # legacy deterministic spawn/check/merge loop
+
+compatibility:
+	 orchd autopilot --continuous [...]  # accepted; implicit in ai-orchestrated mode
+	 orchd autopilot --daemon --continuous [poll_seconds]
 EOF
 			return 0
 			;;
 		--continuous)
 			continuous=true
+			shift
+			;;
+		--deterministic | --classic)
+			engine_override="deterministic"
+			shift
+			;;
+		--ai-orchestrated | --ai)
+			engine_override="ai"
 			shift
 			;;
 		--daemon | --start)
@@ -54,6 +70,30 @@ EOF
 	done
 
 	require_project
+
+	local autopilot_engine="$engine_override"
+	if [[ -z "$autopilot_engine" ]]; then
+		autopilot_engine=$(config_get "orchestrator.autopilot_mode" "ai")
+	fi
+	autopilot_engine=$(printf '%s' "$autopilot_engine" | tr '[:upper:]' '[:lower:]')
+	case "$autopilot_engine" in
+	ai | ai-orchestrated | "")
+		autopilot_engine="ai"
+		;;
+	deterministic | classic | legacy)
+		autopilot_engine="deterministic"
+		;;
+	*)
+		log_event "WARN" "autopilot: unknown orchestrator.autopilot_mode '$autopilot_engine', defaulting to ai"
+		autopilot_engine="ai"
+		;;
+	esac
+
+	if [[ "$autopilot_engine" == "ai" ]]; then
+		_autopilot_delegate_ai "$mode" "$poll_interval" "$continuous"
+		return $?
+	fi
+	_AUTOPILOT_SELECTED_ENGINE="$autopilot_engine"
 
 	case "$mode" in
 	status)
@@ -163,10 +203,15 @@ EOF
 		while IFS= read -r task_id; do
 			[[ -z "$task_id" ]] && continue
 			total=$((total + 1))
-			status=$(task_status "$task_id")
+			task_runtime_refresh "$task_id"
+			status="$TASK_RUNTIME_STATUS"
 			case "$status" in
 			pending) pending=$((pending + 1)) ;;
-			running) running=$((running + 1)) ;;
+			running)
+				if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
+					running=$((running + 1))
+				fi
+				;;
 			done) done_count=$((done_count + 1)) ;;
 			merged) merged=$((merged + 1)) ;;
 			failed) failed=$((failed + 1)) ;;
@@ -294,6 +339,45 @@ EOF
 	done
 }
 
+_autopilot_delegate_ai() {
+	local mode=$1
+	local poll_interval=$2
+	local continuous=$3
+
+	if [[ "$continuous" == "true" ]]; then
+		printf 'note: --continuous is implicit in ai-orchestrated autopilot mode\n'
+	fi
+
+	case "$mode" in
+	status)
+		cmd_orchestrate --status
+		;;
+	stop)
+		cmd_orchestrate --stop
+		;;
+	logs)
+		cmd_orchestrate --logs
+		;;
+	daemon)
+		if [[ -n "$poll_interval" ]]; then
+			cmd_orchestrate --daemon "$poll_interval"
+		else
+			cmd_orchestrate --daemon
+		fi
+		;;
+	run)
+		if [[ -n "$poll_interval" ]]; then
+			cmd_orchestrate "$poll_interval"
+		else
+			cmd_orchestrate
+		fi
+		;;
+	*)
+		die "unsupported autopilot mode: $mode"
+		;;
+	esac
+}
+
 _autopilot_pid_file() {
 	# shellcheck disable=SC2153
 	printf '%s/autopilot.pid' "$ORCHD_DIR"
@@ -391,6 +475,9 @@ _autopilot_start_daemon() {
 	[[ -n "${ORCHD_BIN:-}" ]] || die "ORCHD_BIN not set (internal error)"
 
 	local args="autopilot"
+	if [[ "${_AUTOPILOT_SELECTED_ENGINE:-}" == "deterministic" ]]; then
+		args+=" --deterministic"
+	fi
 	if [[ "$continuous" == "true" ]]; then
 		args+=" --continuous"
 	fi
@@ -473,10 +560,11 @@ _autopilot_check_finished() {
 	local task_id status
 	while IFS= read -r task_id; do
 		[[ -z "$task_id" ]] && continue
-		status=$(task_status "$task_id")
+		task_runtime_refresh "$task_id"
+		status="$TASK_RUNTIME_STATUS"
 		[[ "$status" == "running" ]] || continue
 
-		if ! runner_is_alive "$task_id"; then
+		if [[ "$TASK_RUNTIME_AGENT_ALIVE" != "true" ]]; then
 			printf '  agent exited: %s — checking...\n' "$task_id"
 			# Run check in subshell to isolate die()
 			(_check_single "$task_id" 2>&1) | sed 's/^/    /' || true
@@ -513,8 +601,7 @@ _autopilot_retry_failed() {
 
 		# If no AI runner is available, we cannot retry; mark as needs_input.
 		if [[ "$runner" == "none" ]]; then
-			task_set "$task_id" "status" "needs_input"
-			task_set "$task_id" "needs_input_at" "$(now_iso)"
+			task_mark_needs_input "$task_id" "system" "No AI runner available for retry" "no_runner" "Install/configure a supported runner and retry" "true"
 			task_set "$task_id" "last_failure_reason" "no_runner"
 			log_event "WARN" "autopilot: $task_id needs_input (no runner available to retry)"
 			continue
@@ -524,16 +611,16 @@ _autopilot_retry_failed() {
 		worktree=$(task_get "$task_id" "worktree" "")
 		if [[ -z "$worktree" ]] || [[ ! -d "$worktree" ]]; then
 			# Can't retry without a worktree
-			task_set "$task_id" "status" "needs_input"
-			task_set "$task_id" "needs_input_at" "$(now_iso)"
+			task_mark_needs_input "$task_id" "system" "Task worktree is missing" "missing_worktree" "Recreate worktree and resume task" "true"
 			log_event "WARN" "autopilot: $task_id needs_input (missing worktree)"
 			continue
 		fi
 
-		if [[ -f "$worktree/.orchd_needs_input.md" ]]; then
-			task_set "$task_id" "status" "needs_input"
-			task_set "$task_id" "needs_input_at" "$(now_iso)"
-			log_event "WARN" "autopilot: $task_id needs_input (.orchd_needs_input.md)"
+		needs_input_detect "$worktree"
+		if [[ "$ORCHD_NEEDS_INPUT_PRESENT" == "true" ]]; then
+			task_mark_needs_input "$task_id" "$ORCHD_NEEDS_INPUT_SOURCE" "$ORCHD_NEEDS_INPUT_SUMMARY" "$ORCHD_NEEDS_INPUT_CODE" "$ORCHD_NEEDS_INPUT_QUESTION" "$ORCHD_NEEDS_INPUT_BLOCKING" "$ORCHD_NEEDS_INPUT_OPTIONS" "$ORCHD_NEEDS_INPUT_FILE"
+			task_set "$task_id" "needs_input_error" "$ORCHD_NEEDS_INPUT_ERROR"
+			log_event "WARN" "autopilot: $task_id needs_input (.orchd_needs_input artifact)"
 			continue
 		fi
 
@@ -544,8 +631,7 @@ _autopilot_retry_failed() {
 		fi
 
 		if ((attempts >= retry_limit)); then
-			task_set "$task_id" "status" "needs_input"
-			task_set "$task_id" "needs_input_at" "$(now_iso)"
+			task_mark_needs_input "$task_id" "system" "Retry limit exhausted" "retries_exhausted" "Investigate failure and resume manually" "true"
 			task_set "$task_id" "last_failure_reason" "retries_exhausted"
 			log_event "WARN" "autopilot: $task_id needs_input (retries exhausted: $attempts/$retry_limit)"
 			continue
@@ -593,10 +679,15 @@ _autopilot_spawn_ready() {
 	local task_id status
 	while IFS= read -r task_id; do
 		[[ -z "$task_id" ]] && continue
-		status=$(task_status "$task_id")
+		task_runtime_refresh "$task_id"
+		status="$TASK_RUNTIME_STATUS"
 		case "$status" in
 		pending) pending=$((pending + 1)) ;;
-		running) running=$((running + 1)) ;;
+		running)
+			if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
+				running=$((running + 1))
+			fi
+			;;
 		esac
 	done <<<"$(task_list_ids)"
 
@@ -619,9 +710,14 @@ _autopilot_detect_deadlock() {
 	local task_id status
 	while IFS= read -r task_id; do
 		[[ -z "$task_id" ]] && continue
-		status=$(task_status "$task_id")
+		task_runtime_refresh "$task_id"
+		status="$TASK_RUNTIME_STATUS"
 		case "$status" in
-		running) running=$((running + 1)) ;;
+		running)
+			if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
+				running=$((running + 1))
+			fi
+			;;
 		pending)
 			pending=$((pending + 1))
 			if task_is_ready "$task_id"; then
@@ -645,8 +741,7 @@ _autopilot_detect_deadlock() {
 			[[ -z "$task_id" ]] && continue
 			status=$(task_status "$task_id")
 			if [[ "$status" == "pending" ]]; then
-				task_set "$task_id" "status" "needs_input"
-				task_set "$task_id" "needs_input_at" "$(now_iso)"
+				task_mark_needs_input "$task_id" "system" "Dependency deadlock detected" "dependency_deadlock" "Resolve dependency chain and resume" "true"
 				local deps
 				deps=$(task_get "$task_id" "deps" "")
 				printf '  deadlock: %s -> needs_input (deps: %s)\n' "$task_id" "$deps"
@@ -685,9 +780,15 @@ _autopilot_drain_queue() {
 	local tid status
 	while IFS= read -r tid; do
 		[[ -z "$tid" ]] && continue
-		status=$(task_status "$tid")
+		task_runtime_refresh "$tid"
+		status="$TASK_RUNTIME_STATUS"
 		case "$status" in
-		pending | running) active_task_count=$((active_task_count + 1)) ;;
+		pending) active_task_count=$((active_task_count + 1)) ;;
+		running)
+			if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
+				active_task_count=$((active_task_count + 1))
+			fi
+			;;
 		esac
 	done <<<"$(task_list_ids)"
 

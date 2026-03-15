@@ -30,6 +30,7 @@ _merge_single() {
 
 	local status
 	status=$(task_status "$task_id")
+	local prev_status="$status"
 
 	if [[ "$status" == "merged" ]]; then
 		printf 'already merged: %s\n' "$task_id"
@@ -68,6 +69,13 @@ _merge_single() {
 		die "failed to checkout base branch: $base_branch"
 	fi
 
+	# Only stage memory into the merge commit if docs/memory has no tracked changes.
+	# Untracked memory scaffold files (common right after `orchd memory init`) are OK.
+	local memory_clean=true
+	if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no -- docs/memory 2>/dev/null || true)" ]]; then
+		memory_clean=false
+	fi
+
 	# If task is in conflict state, it may have been merged manually already.
 	if [[ "$status" == "conflict" ]]; then
 		if git -C "$PROJECT_ROOT" rev-parse --verify "$branch" >/dev/null 2>&1; then
@@ -87,8 +95,8 @@ _merge_single() {
 		# Otherwise, try merging again below.
 	fi
 
-	# Perform the merge
-	if ! git -C "$PROJECT_ROOT" merge --no-ff "$branch" -m "merge: $task_id ($branch)"; then
+	# Perform the merge (no-commit so we can include memory updates in the merge commit)
+	if ! git -C "$PROJECT_ROOT" merge --no-ff --no-commit "$branch" >/dev/null 2>&1; then
 		# Auto-resolve conflicts caused only by TASK_REPORT.md (local evidence artifact).
 		local conflict_list
 		conflict_list=$(git -C "$PROJECT_ROOT" diff --name-only --diff-filter=U 2>/dev/null || true)
@@ -98,15 +106,6 @@ _merge_single() {
 			printf 'auto-resolving TASK_REPORT.md conflict (keeping base version)\n'
 			git -C "$PROJECT_ROOT" checkout --ours -- TASK_REPORT.md >/dev/null 2>&1 || true
 			git -C "$PROJECT_ROOT" add TASK_REPORT.md >/dev/null 2>&1 || true
-			git -C "$PROJECT_ROOT" commit --no-edit >/dev/null 2>&1 || {
-				printf '\nmerge conflict detected (TASK_REPORT.md) but auto-commit failed!\n'
-				printf 'resolve conflicts in %s, then run:\n' "$PROJECT_ROOT"
-				printf '  git add . && git commit\n'
-				printf '  orchd merge %s  (retry)\n' "$task_id"
-				log_event "ERROR" "merge conflict (task_report) unresolved: $task_id ($branch -> $base_branch)"
-				task_set "$task_id" "status" "conflict"
-				return 1
-			}
 		else
 			printf '\nmerge conflict detected!\n'
 			printf 'resolve conflicts in %s, then run:\n' "$PROJECT_ROOT"
@@ -118,7 +117,21 @@ _merge_single() {
 		fi
 	fi
 
-	# Run post-merge regression if test command is configured
+	# If the merge produced no changes (already up to date), don't attempt to create a new commit.
+	if ! git -C "$PROJECT_ROOT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+		task_set "$task_id" "status" "merged"
+		task_set "$task_id" "merged_at" "$(now_iso)"
+		printf 'already merged (no-op merge): %s\n' "$task_id"
+		log_event "INFO" "task merged (no-op): $task_id ($branch -> $base_branch)"
+		local worktree
+		worktree=$(task_get "$task_id" "worktree" "")
+		if [[ -n "$worktree" ]] && [[ -d "$worktree" ]]; then
+			worktree_remove "$PROJECT_ROOT" "$worktree"
+		fi
+		return 0
+	fi
+
+	# Run post-merge regression before committing the merge.
 	local test_cmd
 	test_cmd=$(config_get "test_cmd" "")
 	if [[ -n "$test_cmd" ]]; then
@@ -128,30 +141,38 @@ _merge_single() {
 			log_event "INFO" "post-merge regression passed: $task_id"
 		else
 			printf '  [FAIL] post-merge tests failed!\n'
-			printf '  consider: git revert HEAD\n'
+			printf '  merge aborted (no commit created)\n'
 			log_event "ERROR" "post-merge regression failed: $task_id"
+			git -C "$PROJECT_ROOT" merge --abort >/dev/null 2>&1 || true
 			task_set "$task_id" "status" "failed"
 			return 1
 		fi
 	fi
 
+	# Update memory bank. Stage into the merge commit only if it's safe.
+	memory_write_lesson "$task_id" || true
+	memory_update_progress_override "$task_id" "merged" || true
+	if $memory_clean; then
+		git -C "$PROJECT_ROOT" add -A -- docs/memory >/dev/null 2>&1 || true
+	else
+		log_event "WARN" "memory: updated but not staged for $task_id (docs/memory has local changes)"
+	fi
+
+	# Finalize merge commit.
+	if ! git -C "$PROJECT_ROOT" commit -m "merge: $task_id ($branch)" >/dev/null 2>&1; then
+		printf '\nmerge applied but commit failed!\n'
+		printf 'resolve in %s, then run:\n' "$PROJECT_ROOT"
+		printf '  git status\n'
+		printf '  git commit\n'
+		log_event "ERROR" "merge commit failed: $task_id ($branch -> $base_branch)"
+		task_set "$task_id" "status" "conflict"
+		return 1
+	fi
+
 	task_set "$task_id" "status" "merged"
 	task_set "$task_id" "merged_at" "$(now_iso)"
 
-	# Write/update memory bank. Keep this isolated from user edits and avoid
-	# leaving the base branch dirty after merge.
-	local memory_clean=true
-	if ! git -C "$PROJECT_ROOT" diff --quiet -- docs/memory 2>/dev/null || ! git -C "$PROJECT_ROOT" diff --cached --quiet -- docs/memory 2>/dev/null; then
-		memory_clean=false
-	fi
-
-	memory_write_lesson "$task_id" || true
-	memory_update_progress || true
-	if $memory_clean; then
-		_merge_commit_memory_updates "$task_id" || true
-	else
-		log_event "WARN" "memory: skipped auto-commit for $task_id (docs/memory has local changes)"
-	fi
+	# Memory updates were already staged into the merge commit above.
 
 	printf 'merged: %s\n' "$task_id"
 	log_event "INFO" "task merged: $task_id ($branch -> $base_branch)"
@@ -180,30 +201,6 @@ _merge_single() {
 	if ((unblocked > 0)); then
 		printf '\n%d task(s) unblocked — run: orchd spawn --all\n' "$unblocked"
 	fi
-}
-
-_merge_commit_memory_updates() {
-	local task_id=$1
-
-	if [[ ! -d "$PROJECT_ROOT/docs/memory" ]]; then
-		return 0
-	fi
-
-	git -C "$PROJECT_ROOT" add -A -- docs/memory >/dev/null 2>&1 || return 0
-	if git -C "$PROJECT_ROOT" diff --cached --quiet -- docs/memory; then
-		return 0
-	fi
-
-	if git -C "$PROJECT_ROOT" commit -m "docs(memory): update after merging $task_id" -- docs/memory >/dev/null 2>&1; then
-		log_event "INFO" "memory: committed updates for $task_id"
-		return 0
-	fi
-
-	# Avoid leaving the index dirty if commit is rejected (hooks, config, etc.).
-	git -C "$PROJECT_ROOT" restore --staged -- docs/memory >/dev/null 2>&1 || true
-	log_event "WARN" "memory: failed to commit generated updates for $task_id"
-	printf 'warning: failed to commit memory updates for %s (docs/memory remains modified)\n' "$task_id" >&2
-	return 1
 }
 
 _merge_all_ready() {

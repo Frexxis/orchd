@@ -17,7 +17,8 @@ usage:
   orchd await <task-id> [--poll <seconds>] [--timeout <seconds>] [--json]
 
 notes:
-  - await blocks until an agent exits or a task reaches a non-running state
+  - await blocks on live running agents only (status=running and agent_alive=true)
+  - returns when a live agent exits or when no live running tasks remain
   - use this instead of `sleep` in long-running orchestrations
 EOF
 			return 0
@@ -77,6 +78,9 @@ EOF
 	if ((task_count == 0)); then
 		die "no tasks found"
 	fi
+	if [[ "$target" != "--all" ]] && ! task_exists "$target"; then
+		die "task not found: $target"
+	fi
 
 	local start_epoch
 	start_epoch=$(date +%s)
@@ -90,39 +94,43 @@ EOF
 			while IFS= read -r tid; do
 				[[ -z "$tid" ]] && continue
 				total=$((total + 1))
-				status=$(task_status "$tid")
+				task_runtime_refresh "$tid"
+				status="$TASK_RUNTIME_STATUS"
 				case "$status" in
 				pending) pending=$((pending + 1)) ;;
-				running) running=$((running + 1)) ;;
+				running)
+					if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
+						running=$((running + 1))
+					elif [[ -z "$exited_task" ]]; then
+						exited_task="$tid"
+					fi
+					;;
 				done) done_count=$((done_count + 1)) ;;
 				merged) merged=$((merged + 1)) ;;
 				failed) failed=$((failed + 1)) ;;
 				conflict) conflict=$((conflict + 1)) ;;
 				needs_input) needs_input=$((needs_input + 1)) ;;
 				esac
-				if [[ "$status" == "running" ]] && ! runner_is_alive "$tid"; then
-					exited_task="$tid"
-					break
-				fi
 			done <<<"$(task_list_ids)"
 
-			if [[ -n "$exited_task" ]]; then
-				_await_emit "$json" "agent_exited" "$exited_task" \
-					"$total" "$pending" "$running" "$done_count" "$merged" "$failed" "$conflict" "$needs_input"
-				return 0
-			fi
-			if ((done_count + failed + conflict + needs_input + merged > 0)); then
-				_await_emit "$json" "action_required" "" \
-					"$total" "$pending" "$running" "$done_count" "$merged" "$failed" "$conflict" "$needs_input"
-				return 0
-			fi
 			if ((running == 0)); then
-				_await_emit "$json" "no_running_tasks" "" \
-					"$total" "$pending" "$running" "$done_count" "$merged" "$failed" "$conflict" "$needs_input"
+				if [[ -n "$exited_task" ]]; then
+					_await_emit "$json" "agent_exited" "$exited_task" \
+						"$total" "$pending" "$running" "$done_count" "$merged" "$failed" "$conflict" "$needs_input"
+					return 0
+				fi
+				if ((done_count + failed + conflict + needs_input > 0)); then
+					_await_emit "$json" "action_required" "" \
+						"$total" "$pending" "$running" "$done_count" "$merged" "$failed" "$conflict" "$needs_input"
+				else
+					_await_emit "$json" "no_running_tasks" "" \
+						"$total" "$pending" "$running" "$done_count" "$merged" "$failed" "$conflict" "$needs_input"
+				fi
 				return 0
 			fi
 		else
-			status=$(task_status "$target")
+			task_runtime_refresh "$target"
+			status="$TASK_RUNTIME_STATUS"
 			case "$status" in
 			pending | done | merged | failed | conflict | needs_input)
 				_await_emit "$json" "status_${status}" "$target" \
@@ -134,9 +142,9 @@ EOF
 				return 0
 				;;
 			running)
-				if ! runner_is_alive "$target"; then
+				if [[ "$TASK_RUNTIME_AGENT_ALIVE" != "true" ]]; then
 					_await_emit "$json" "agent_exited" "$target" \
-						"1" "0" "1" "0" "0" "0" "0" "0"
+						"1" "0" "0" "0" "0" "0" "0" "0"
 					return 0
 				fi
 				;;
