@@ -291,3 +291,128 @@ Rollback note (2026-03-15 sticky opencode session reminders)
 Risks/notes (2026-03-15 sticky opencode session reminders)
 - Sticky mode currently targets `opencode`; other runners continue using reinvoke loop behavior.
 - Reminder injection relies on tmux paste/send mechanics; terminal/UI behavior differences could affect prompt formatting in edge cases.
+
+---
+
+Summary of changes (2026-03-21 sticky codex session reminders)
+- Extended sticky-session orchestrator support to `codex`, not just `opencode`, so reminders can now target the same live Codex session when interactive mode becomes ready.
+- Added runner-aware sticky startup/injection helpers, including Codex trust-prompt handling and readiness detection before sending reminders.
+- Added a sticky startup timeout config and documented fallback behavior when an interactive session never becomes ready.
+
+Files modified/created (2026-03-21 sticky codex session reminders)
+- `lib/cmd/orchestrate.sh` (updated)
+- `lib/cmd/init.sh` (updated)
+- `README.md` (updated)
+- `ORCHESTRATOR.md` (updated)
+- `orchestrator-runbook.md` (updated)
+- `TASK_REPORT.md` (updated)
+
+Evidence (2026-03-21 sticky codex session reminders)
+EVIDENCE:
+- CMD: `bash -n "lib/cmd/orchestrate.sh" && bash -n "lib/cmd/init.sh" && bash -n "bin/orchd"`
+  RESULT: PASS
+  OUTPUT: Syntax checks passed after adding Codex sticky-session support.
+
+EVIDENCE:
+- CMD: `codex --help` and `codex resume --help`
+  RESULT: PASS
+  OUTPUT: Verified Codex has an interactive CLI mode and session resume support, confirming same-session continuation is a valid target.
+
+EVIDENCE:
+- CMD: `timeout 25 "/home/muhammetali/Projeler/orchd/bin/orchd" orchestrate 1` (in temp repo configured with `runner=codex`, `session_mode=sticky`, and a fake interactive Codex binary)
+  RESULT: PASS
+  OUTPUT: Sticky loop printed inject 1 and inject 2 lines in the same tmux session, proving same-session reminder flow for Codex.
+
+Rollback note (2026-03-21 sticky codex session reminders)
+- Trigger rollback if Codex sticky mode causes stuck trust prompts, repeated failed injections, or unstable interactive sessions.
+- Revert by setting `orchestrator.session_mode = "reinvoke"` (or keeping `auto` on unsupported environments) and removing the Codex-specific sticky helpers from `lib/cmd/orchestrate.sh`.
+
+Risks/notes (2026-03-21 sticky codex session reminders)
+- Codex sticky mode depends on the interactive CLI being supported by the active provider/session; when it is not, orchd now falls back to classic reinvoke behavior.
+- The readiness detector is heuristic-based (`OpenAI Codex`, trust prompt, startup messages), so future Codex UI text changes may require updating the detector.
+
+---
+
+Summary of changes (2026-03-21 attached opencode session reminders)
+- Added an attached-session orchestrator mode for `opencode` that can discover an existing opencode chat session in the current project and send reminders into that same conversation.
+- Implemented opencode session discovery/export/continue helpers and integrated them into `orchd orchestrate` so `session_mode=auto|attached` prefers same-session continuation before falling back to sticky/reinvoke modes.
+- Added `opencode_bin` configurability and reused it across orchestrate/runner/plan/ideate/review paths so opencode-based flows can be tested and overridden consistently.
+
+Files modified/created (2026-03-21 attached opencode session reminders)
+- `lib/cmd/orchestrate.sh` (updated)
+- `lib/runner.sh` (updated)
+- `lib/cmd/plan.sh` (updated)
+- `lib/cmd/ideate.sh` (updated)
+- `lib/cmd/review.sh` (updated)
+- `lib/cmd/init.sh` (updated)
+- `bin/orchd` (updated)
+- `README.md` (updated)
+- `ORCHESTRATOR.md` (updated)
+- `orchestrator-runbook.md` (updated)
+- `TASK_REPORT.md` (updated)
+
+Evidence (2026-03-21 attached opencode session reminders)
+EVIDENCE:
+- CMD: `bash -n "lib/cmd/orchestrate.sh" && bash -n "lib/cmd/init.sh" && bash -n "bin/orchd"`
+  RESULT: PASS
+  OUTPUT: Syntax checks passed after adding attached opencode session support.
+
+EVIDENCE:
+- CMD: `opencode session list --format json` and `opencode export <session-id>`
+  RESULT: PASS
+  OUTPUT: Verified opencode exposes session metadata and full message history needed for idle detection and same-session reminders.
+
+EVIDENCE:
+- CMD: `FAKE_OPENCODE_STATE="/tmp/orchd-opencode-fake/state" timeout 15 "/home/muhammetali/Projeler/orchd/bin/orchd" orchestrate 1` (temp repo with fake opencode binary, `runner=opencode`, `session_mode=attached`)
+  RESULT: PASS
+  OUTPUT: orchd detected the attached session, injected a `<system-reminder>` as a user message into that same session, and the exported session history showed the new reminder + assistant continuation in the original conversation.
+
+Rollback note (2026-03-21 attached opencode session reminders)
+- Trigger rollback if opencode attached-session discovery picks the wrong conversation, reminder injection spams user chats, or opencode session export/continue semantics change incompatibly.
+- Revert by setting `orchestrator.session_mode = "reinvoke"` or `"sticky"` for opencode projects and removing the attached-session helpers from `lib/cmd/orchestrate.sh`.
+
+Risks/notes (2026-03-21 attached opencode session reminders)
+- Attached mode picks the most recent same-directory opencode session, preferring titles that mention `orchd`/`orchestrator`; if multiple valid orchestrator chats exist in one repo, explicit attachment may still be desirable in a future update.
+- The attached-session implementation is currently opencode-specific; other runners keep their existing sticky/reinvoke behavior.
+
+---
+
+Summary of changes (2026-03-21 opencode orchestrator + codex workers)
+- Hardened orchestrator reminders with an explicit build-mode `<system-reminder>` block that tells the agent it is no longer read-only and may use tools, edit files, and continue orchestration autonomously.
+- Updated `bloom` and `Macro-Studio` to use `opencode` for the orchestrator and `codex` for workers, with `session_mode = "attached"` so orchd can inject reminders into the existing opencode orchestrator conversation.
+- Refreshed project orchestration docs after the config changes.
+
+Files modified/created (2026-03-21 opencode orchestrator + codex workers)
+- `lib/cmd/orchestrate.sh` (updated)
+- `templates/orchestrator.prompt` (updated)
+- `/home/muhammetali/Projeler/bloom/.orchd.toml` (updated)
+- `/home/muhammetali/Projeler/Macro-Studio/.orchd.toml` (updated)
+- `/home/muhammetali/Projeler/bloom/ORCHESTRATOR.md` (updated via refresh)
+- `/home/muhammetali/Projeler/bloom/orchestrator-runbook.md` (updated via refresh)
+- `/home/muhammetali/Projeler/Macro-Studio/ORCHESTRATOR.md` (updated via refresh)
+- `/home/muhammetali/Projeler/Macro-Studio/orchestrator-runbook.md` (updated via refresh)
+- `TASK_REPORT.md` (updated)
+
+Evidence (2026-03-21 opencode orchestrator + codex workers)
+EVIDENCE:
+- CMD: `bash -n "lib/cmd/orchestrate.sh" && bash -n "lib/runner.sh" && bash -n "lib/cmd/plan.sh" && bash -n "lib/cmd/ideate.sh" && bash -n "lib/cmd/review.sh" && bash -n "lib/cmd/init.sh" && bash -n "bin/orchd"`
+  RESULT: PASS
+  OUTPUT: Syntax checks passed after adding the build-mode reminder block and project config updates.
+
+EVIDENCE:
+- CMD: `rg -n "Your operational mode has changed from plan to build" templates/orchestrator.prompt lib/cmd/orchestrate.sh`
+  RESULT: PASS
+  OUTPUT: The explicit build-mode system reminder is now present in both the initial orchestrator prompt and continuation reminders.
+
+EVIDENCE:
+- CMD: `rg -n "runner = |session_mode = |autopilot_mode = " /home/muhammetali/Projeler/bloom/.orchd.toml /home/muhammetali/Projeler/Macro-Studio/.orchd.toml`
+  RESULT: PASS
+  OUTPUT: Both projects now declare `orchestrator.runner = "opencode"`, `autopilot_mode = "ai"`, `session_mode = "attached"`, and `worker.runner = "codex"`.
+
+Rollback note (2026-03-21 opencode orchestrator + codex workers)
+- Trigger rollback if adopting an existing opencode chat causes reminders to land in the wrong conversation or if Codex workers/orchestration split creates confusion in project automation.
+- Revert by setting project configs back to the previous orchestrator runner/session mode and removing the new build-mode reminder text from `lib/cmd/orchestrate.sh` and `templates/orchestrator.prompt`.
+
+Risks/notes (2026-03-21 opencode orchestrator + codex workers)
+- `orchd doctor` still reports the worker/default runner path, so it shows `codex` even when the orchestrator is explicitly configured to `opencode`; this is expected with the current doctor output.
+- Attached opencode mode works best when the orchestrator chat title clearly references `orchd`/`orchestrator`, because that increases the chance orchd adopts the intended conversation.

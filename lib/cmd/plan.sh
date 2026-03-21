@@ -174,7 +174,9 @@ EOF
 		}
 		;;
 	opencode)
-		opencode -p "$prompt" >"$plan_output" 2>"$ORCHD_DIR/plan_stderr.log" || {
+		local opencode_bin
+		opencode_bin=$(config_get "opencode_bin" "opencode")
+		"$opencode_bin" -p "$prompt" >"$plan_output" 2>"$ORCHD_DIR/plan_stderr.log" || {
 			die "opencode plan generation failed. See $ORCHD_DIR/plan_stderr.log"
 		}
 		;;

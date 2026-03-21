@@ -188,7 +188,9 @@ EOF
 		}
 		;;
 	opencode)
-		opencode -p "$prompt" >"$ideate_output" 2>"$err_file" || {
+		local opencode_bin
+		opencode_bin=$(config_get "opencode_bin" "opencode")
+		"$opencode_bin" -p "$prompt" >"$ideate_output" 2>"$err_file" || {
 			log_event "ERROR" "ideate: opencode invocation failed"
 			die "opencode ideation failed. See $err_file"
 		}

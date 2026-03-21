@@ -22,7 +22,8 @@ notes:
   - runs an AI orchestrator under supervisor control
   - automatically reinvokes the orchestrator with a system reminder until terminal state
   - waiting on workers is handled by the supervisor, not by the orchestrator agent itself
-  - with opencode and session_mode=sticky, reminders are injected into the same live session
+  - with opencode/codex and session_mode=sticky, reminders are injected into the same live session
+  - with opencode and session_mode=auto/attached, orchd can adopt an existing opencode session and send reminders into that session
 EOF
 			return 0
 			;;
@@ -106,6 +107,14 @@ EOF
 	fallback_on_inject_failure=$(config_get "orchestrator.fallback_on_inject_failure" "true")
 
 	rm -f "$(_orchestrate_stop_file)" 2>/dev/null || true
+	if _orchestrate_use_attached_opencode_session "$runner" "$session_mode" "$once"; then
+		_orchestrate_loop_attached_opencode "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$idle_timeout" "$reminder_cooldown" "$max_reminders" "$fallback_on_inject_failure"
+		local attached_rc=$?
+		if ((attached_rc != 94)); then
+			return $attached_rc
+		fi
+		log_event "INFO" "attached opencode session unavailable; falling back to sticky/reinvoke mode"
+	fi
 	if _orchestrate_use_sticky_session "$runner" "$session_mode" "$once"; then
 		_orchestrate_loop_sticky "$runner" "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$idle_timeout" "$reminder_cooldown" "$max_reminders" "$fallback_on_inject_failure"
 		local sticky_rc=$?
@@ -166,6 +175,24 @@ _orchestrate_session_mode_file() {
 	printf '%s/session_mode\n' "$(_orchestrate_state_dir)"
 }
 
+_orchestrate_attached_session_id_file() {
+	printf '%s/attached_session_id\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_session_snapshot_file() {
+	printf '%s/opencode_session_snapshot.json\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_opencode_bin() {
+	config_get "opencode_bin" "opencode"
+}
+
+_orchestrate_opencode_run() {
+	local opencode_bin
+	opencode_bin=$(_orchestrate_opencode_bin)
+	"$opencode_bin" "$@"
+}
+
 _orchestrate_use_sticky_session() {
 	local runner=$1
 	local session_mode=$2
@@ -177,10 +204,10 @@ _orchestrate_use_sticky_session() {
 	mode=$(printf '%s' "$session_mode" | tr '[:upper:]' '[:lower:]')
 	case "$mode" in
 	sticky)
-		[[ "$runner" == "opencode" ]]
+		_orchestrate_sticky_supported_runner "$runner"
 		;;
 	auto | "")
-		[[ "$runner" == "opencode" ]]
+		_orchestrate_sticky_supported_runner "$runner"
 		;;
 	classic | reinvoke | one-shot)
 		return 1
@@ -189,6 +216,142 @@ _orchestrate_use_sticky_session() {
 		return 1
 		;;
 	esac
+}
+
+_orchestrate_sticky_supported_runner() {
+	local runner=$1
+	case "$runner" in
+	opencode | codex)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+_orchestrate_use_attached_opencode_session() {
+	local runner=$1
+	local session_mode=$2
+	local once=$3
+	[[ "$runner" == "opencode" ]] || return 1
+	[[ "$once" == "false" ]] || return 1
+	local mode
+	mode=$(printf '%s' "$session_mode" | tr '[:upper:]' '[:lower:]')
+	case "$mode" in
+	auto | attached | session | adopt)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+_orchestrate_opencode_list_sessions_json() {
+	_orchestrate_opencode_run session list --format json
+}
+
+_orchestrate_opencode_export_session_json() {
+	local session_id=$1
+	_orchestrate_opencode_run export "$session_id"
+}
+
+_orchestrate_opencode_continue_session() {
+	local session_id=$1
+	local prompt=$2
+	_orchestrate_opencode_run run --session "$session_id" --dir "$PROJECT_ROOT" --format json "$prompt"
+}
+
+_orchestrate_opencode_select_session() {
+	local sessions_json
+	sessions_json=$(_orchestrate_opencode_list_sessions_json 2>/dev/null || true)
+	[[ -n "$sessions_json" ]] || return 1
+	python - "$PROJECT_ROOT" "$sessions_json" <<'PY'
+import json, sys, re
+project_root = sys.argv[1]
+raw = sys.argv[2]
+try:
+    sessions = json.loads(raw)
+except Exception:
+    print("")
+    raise SystemExit(0)
+orch_pattern = re.compile(r"orchd|orchestr", re.I)
+candidates = []
+for idx, sess in enumerate(sessions):
+    if sess.get("directory") != project_root:
+        continue
+    score = 0
+    title = sess.get("title") or ""
+    if orch_pattern.search(title):
+        score += 50
+    score += int(sess.get("updated") or 0)
+    candidates.append((score, -idx, sess.get("id", "")))
+if not candidates:
+    print("")
+else:
+    candidates.sort(reverse=True)
+    print(candidates[0][2])
+PY
+}
+
+_orchestrate_opencode_session_snapshot() {
+	local session_id=$1
+	local export_json
+	export_json=$(_orchestrate_opencode_export_session_json "$session_id" 2>/dev/null || true)
+	[[ -n "$export_json" ]] || return 1
+	python - "$export_json" <<'PY'
+import json, sys
+raw = sys.argv[1]
+try:
+    data = json.loads(raw)
+except Exception:
+    raise SystemExit(1)
+messages = data.get("messages") or []
+last_role = ""
+last_text = ""
+last_created = 0
+last_completed = 0
+last_assistant_completed = 0
+last_user_created = 0
+for msg in messages:
+    info = msg.get("info") or {}
+    role = info.get("role") or ""
+    time = info.get("time") or {}
+    created = int(time.get("created") or 0)
+    completed = int(time.get("completed") or created or 0)
+    parts = msg.get("parts") or []
+    texts = []
+    for part in parts:
+        if part.get("type") == "text":
+            txt = part.get("text") or ""
+            if txt.strip():
+                texts.append(txt.strip())
+    if role:
+        last_role = role
+        last_text = "\n".join(texts)[-8000:]
+        last_created = created
+        last_completed = completed
+    if role == "assistant":
+        last_assistant_completed = max(last_assistant_completed, completed)
+    elif role == "user":
+        last_user_created = max(last_user_created, created)
+snapshot = {
+    "session_id": data.get("info", {}).get("id", ""),
+    "directory": data.get("info", {}).get("directory", ""),
+    "title": data.get("info", {}).get("title", ""),
+    "updated": int(data.get("info", {}).get("time", {}).get("updated") or 0),
+    "created": int(data.get("info", {}).get("time", {}).get("created") or 0),
+    "last_role": last_role,
+    "last_text": last_text,
+    "last_created": last_created,
+    "last_completed": last_completed,
+    "last_assistant_completed": last_assistant_completed,
+    "last_user_created": last_user_created,
+    "message_count": len(messages),
+}
+print(json.dumps(snapshot, ensure_ascii=False))
+PY
 }
 
 _orchestrate_prepare_dir() {
@@ -214,6 +377,11 @@ _orchestrate_status() {
 		sticky_session=$(cat "$(_orchestrate_session_name_file)" 2>/dev/null || true)
 		if [[ -n "$sticky_session" ]] && tmux has-session -t "$sticky_session" 2>/dev/null; then
 			printf 'sticky session: %s\n' "$sticky_session"
+		fi
+		local attached_session=""
+		attached_session=$(cat "$(_orchestrate_attached_session_id_file)" 2>/dev/null || true)
+		if [[ -n "$attached_session" ]]; then
+			printf 'attached opencode session: %s\n' "$attached_session"
 		fi
 		return 0
 	fi
@@ -243,6 +411,7 @@ _orchestrate_stop() {
 		printf 'orchestrator supervisor: not running\n'
 	fi
 	rm -f "$(_orchestrate_pid_file)"
+	rm -f "$(_orchestrate_attached_session_id_file)"
 }
 
 _orchestrate_logs() {
@@ -432,6 +601,10 @@ _orchestrate_build_reminder_block() {
 	fi
 	cat <<EOF
 <system-reminder>
+Your operational mode has changed from plan to build.
+You are no longer in read-only mode.
+You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed.
+
 You are the active orchestrator for this orchd project.
 Your previous orchestration turn ended before the project reached a terminal state.
 
@@ -447,6 +620,65 @@ If there is no active work, create the next work item with orchd ideate/plan or 
 Only stop when the project is complete or a genuine blocking decision is required.
 </system-reminder>
 EOF
+}
+
+_orchestrate_build_session_reminder() {
+	local reason=$1
+	local summary=$2
+	local last_text=$3
+	cat <<EOF
+<system-reminder>
+Your operational mode has changed from plan to build.
+You are no longer in read-only mode.
+You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed.
+
+You are still the active orchestrator for this orchd project.
+Do not stop after a partial orchestration step.
+Do not wait for user permission unless there is a real blocker.
+If workers are running, use orchd await and continue after the state changes.
+If tasks need checking or merging, do that now.
+If tasks are ready to spawn, do that now.
+If there is no active work, create the next work item with orchd ideate/plan.
+Only stop on PROJECT_COMPLETE or genuine NEEDS_INPUT.
+
+Resume reason: $reason
+Current orchd summary: $summary
+
+Recent assistant output tail:
+$last_text
+</system-reminder>
+EOF
+}
+
+_orchestrate_session_passive_stop_detected() {
+	local text=$1
+	local lower pattern
+	lower=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
+	for pattern in "let me know" "would you like" "shall i" "if you want" "istersen" "devam edeyim"; do
+		if grep -Fq "$pattern" <<<"$lower"; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+_orchestrate_session_action_required() {
+	if _orchestrate_completion_eligible; then
+		return 1
+	fi
+	if ((ORCH_STATE_PENDING > 0 || ORCH_STATE_RUNNING > 0 || ORCH_STATE_DONE > 0)); then
+		return 0
+	fi
+	if ((ORCH_STATE_FAILED > 0 || ORCH_STATE_CONFLICT > 0 || ORCH_STATE_NEEDS_INPUT > 0)); then
+		return 0
+	fi
+	if ((ORCH_READY_SPAWN > 0 || ORCH_READY_CHECK > 0 || ORCH_READY_MERGE > 0)); then
+		return 0
+	fi
+	if ((ORCH_QUEUE_PENDING > 0 || ORCH_QUEUE_IN_PROGRESS > 0)); then
+		return 0
+	fi
+	return 1
 }
 
 _build_orchestrator_prompt() {
@@ -504,7 +736,9 @@ _orchestrate_invoke_runner() {
 		(cd "$PROJECT_ROOT" && "$claude_bin" -p "$prompt" --output-format text >"$out_file" 2>"$err_file") || return 1
 		;;
 	opencode)
-		(cd "$PROJECT_ROOT" && opencode -p "$prompt" >"$out_file" 2>"$err_file") || return 1
+		local opencode_bin
+		opencode_bin=$(_orchestrate_opencode_bin)
+		(cd "$PROJECT_ROOT" && "$opencode_bin" -p "$prompt" >"$out_file" 2>"$err_file") || return 1
 		;;
 	aider)
 		(cd "$PROJECT_ROOT" && aider --message "$prompt" --yes --no-git >"$out_file" 2>"$err_file") || return 1
@@ -532,12 +766,243 @@ _orchestrate_sticky_session_name() {
 	printf 'orchd-orchestrator-%s\n' "${hash:0:10}"
 }
 
+_orchestrate_sticky_startup_timeout() {
+	local configured
+	configured=$(config_get_int "orchestrator.sticky_startup_timeout" "30")
+	if ((configured < 5)); then
+		configured=5
+	fi
+	printf '%s\n' "$configured"
+}
+
+_orchestrate_sticky_launch_command() {
+	local runner=$1
+	case "$runner" in
+	opencode)
+		local opencode_bin
+		opencode_bin=$(_orchestrate_opencode_bin)
+		printf 'cd %q && %q\n' "$PROJECT_ROOT" "$opencode_bin"
+		;;
+	codex)
+		local codex_bin codex_flags
+		codex_bin=$(config_get "codex_bin" "codex")
+		codex_flags=$(config_get "codex_flags" "--dangerously-bypass-approvals-and-sandbox")
+		printf 'cd %q && ' "$PROJECT_ROOT"
+		printf '%q ' "$codex_bin"
+		if [[ -n "$codex_flags" ]]; then
+			printf '%s ' "$codex_flags"
+		fi
+		printf -- '--no-alt-screen -C %q\n' "$PROJECT_ROOT"
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+_orchestrate_snapshot_to_vars() {
+	local snapshot_json=$1
+	python - "$snapshot_json" <<'PY'
+import json, shlex, sys
+data = json.loads(sys.argv[1])
+for key in [
+    'session_id', 'directory', 'title', 'updated', 'created', 'last_role',
+    'last_text', 'last_created', 'last_completed', 'last_assistant_completed',
+    'last_user_created', 'message_count'
+]:
+    value = data.get(key, '')
+    if value is None:
+        value = ''
+    print(f"{key.upper()}={shlex.quote(str(value))}")
+PY
+}
+
+_orchestrate_loop_attached_opencode() {
+	local poll_interval=$1
+	local continue_delay=$2
+	local max_iterations=$3
+	local max_stagnation=$4
+	local idle_timeout=$5
+	local reminder_cooldown=$6
+	local max_reminders=$7
+	local fallback_on_inject_failure=$8
+
+	local fallback_enabled=true
+	if ! is_truthy "$fallback_on_inject_failure"; then
+		fallback_enabled=false
+	fi
+
+	local session_id=""
+	session_id=$(cat "$(_orchestrate_attached_session_id_file)" 2>/dev/null || true)
+	if [[ -z "$session_id" ]]; then
+		session_id=$(_orchestrate_opencode_select_session)
+	fi
+	if [[ -z "$session_id" ]]; then
+		return 94
+	fi
+	printf '%s\n' "$session_id" >"$(_orchestrate_attached_session_id_file)"
+	printf 'attached\n' >"$(_orchestrate_session_mode_file)"
+
+	local iteration=0
+	local reminder_count=0
+	local last_seen_updated=0
+	local last_reminder_ms=0
+	local last_state_fingerprint=""
+	local stagnation=0
+
+	log_event "INFO" "orchestrator attached-session supervisor started (runner=opencode session=$session_id poll=${poll_interval}s)"
+	printf 'orchestrator attached-session supervisor started\n'
+	printf '  runner: opencode\n'
+	printf '  poll:   %ss\n' "$poll_interval"
+	printf '  mode:   attached-session\n'
+	printf '  session:%s\n\n' "$session_id"
+
+	while true; do
+		if [[ -f "$(_orchestrate_stop_file)" ]]; then
+			log_event "INFO" "orchestrator attached-session stop file detected"
+			printf 'orchestrator attached-session supervisor stopped\n'
+			return 0
+		fi
+
+		local snapshot_json
+		snapshot_json=$(_orchestrate_opencode_session_snapshot "$session_id" 2>/dev/null || true)
+		if [[ -z "$snapshot_json" ]]; then
+			session_id=$(_orchestrate_opencode_select_session)
+			if [[ -n "$session_id" ]]; then
+				printf '%s\n' "$session_id" >"$(_orchestrate_attached_session_id_file)"
+				snapshot_json=$(_orchestrate_opencode_session_snapshot "$session_id" 2>/dev/null || true)
+			fi
+		fi
+		if [[ -z "$snapshot_json" ]]; then
+			if [[ "$fallback_enabled" == "true" ]]; then
+				return 94
+			fi
+			printf 'attached opencode session unavailable\n'
+			return 1
+		fi
+		printf '%s\n' "$snapshot_json" >"$(_orchestrate_session_snapshot_file)"
+		eval "$(_orchestrate_snapshot_to_vars "$snapshot_json")"
+		printf '%s\n' "$LAST_TEXT" >"$(_orchestrate_state_dir)/last_output.txt"
+
+		_orchestrate_collect_state
+		local summary state_json state_fingerprint prev_state_fingerprint
+		summary=$(_orchestrate_state_summary)
+		state_json=$(cmd_state --json)
+		printf '%s\n' "$state_json" >"$(_orchestrate_state_dir)/current_state.json"
+		prev_state_fingerprint=$last_state_fingerprint
+		state_fingerprint=$(printf '%s' "$state_json" | git hash-object --stdin)
+
+		if [[ -n "$prev_state_fingerprint" ]] && [[ "$state_fingerprint" == "$prev_state_fingerprint" ]]; then
+			stagnation=$((stagnation + 1))
+		else
+			stagnation=0
+		fi
+		last_state_fingerprint="$state_fingerprint"
+		printf '%s\n' "$stagnation" >"$(_orchestrate_state_dir)/stagnation_count"
+
+		if ((stagnation >= max_stagnation)); then
+			if [[ "$fallback_enabled" == "true" ]]; then
+				log_event "WARN" "attached opencode session stagnated; falling back"
+				return 94
+			fi
+			printf 'attached opencode session stalled after %d unchanged cycles\n' "$stagnation"
+			return 1
+		fi
+
+		if ! _orchestrate_session_action_required; then
+			if _orchestrate_completion_eligible; then
+				printf 'project complete (attached orchestrator)\n'
+				return 0
+			fi
+			sleep "$poll_interval"
+			continue
+		fi
+
+		local now_ms
+		now_ms=$(($(date +%s) * 1000))
+		local idle_ms=$((now_ms - UPDATED))
+		local cooldown_ok=false
+		if ((now_ms - last_reminder_ms >= reminder_cooldown * 1000)); then
+			cooldown_ok=true
+		fi
+
+		local passive_stop=false
+		if _orchestrate_session_passive_stop_detected "$LAST_TEXT"; then
+			passive_stop=true
+		fi
+
+		local state_changed=false
+		if [[ "$last_seen_updated" != "0" ]] && ((UPDATED == last_seen_updated)) && [[ "$cooldown_ok" == "true" ]] && [[ "$state_fingerprint" != "$prev_state_fingerprint" ]]; then
+			state_changed=true
+		fi
+
+		local should_remind=false
+		local remind_reason=""
+		if [[ "$LAST_ROLE" == "assistant" ]] && [[ "$cooldown_ok" == "true" ]]; then
+			if [[ "$passive_stop" == "true" ]]; then
+				should_remind=true
+				remind_reason="system reminder: you ended with a passive handoff. Continue autonomous orchestration immediately."
+			elif ((idle_ms >= idle_timeout * 1000)); then
+				should_remind=true
+				remind_reason="system reminder: the orchestrator session went idle while work remains. Continue orchestration now."
+			fi
+		fi
+		if [[ "$state_changed" == "true" ]]; then
+			should_remind=true
+			remind_reason="system reminder: orchd state changed while your session was idle. Re-read state and continue orchestration."
+		fi
+
+		if [[ "$should_remind" == "true" ]]; then
+			iteration=$((iteration + 1))
+			if ((max_iterations > 0)) && ((iteration > max_iterations)); then
+				printf 'orchestrator reached iteration limit (%d)\n' "$max_iterations"
+				return 1
+			fi
+			printf '%s\n' "$iteration" >"$(_orchestrate_state_dir)/iteration"
+			local reminder_prompt
+			reminder_prompt=$(_orchestrate_build_session_reminder "$remind_reason" "$summary" "$LAST_TEXT")
+			local prefix out_file err_file
+			prefix=$(printf 'attached-%04d' "$iteration")
+			out_file="$(_orchestrate_iteration_dir)/${prefix}.raw.jsonl"
+			err_file="$(_orchestrate_iteration_dir)/${prefix}.stderr.log"
+			printf '[%s] attached orchestrator remind %d - %s\n' "$(now_iso)" "$iteration" "$remind_reason"
+			_orchestrate_history_append "attached iteration=$iteration session=$session_id reason=$remind_reason before=$summary"
+			if ! _orchestrate_opencode_continue_session "$session_id" "$reminder_prompt" >"$out_file" 2>"$err_file"; then
+				if [[ "$fallback_enabled" == "true" ]]; then
+					log_event "WARN" "attached opencode reminder injection failed; falling back"
+					return 94
+				fi
+				return 1
+			fi
+			last_reminder_ms=$now_ms
+			reminder_count=$((reminder_count + 1))
+			printf '%s\n' "$reminder_count" >"$(_orchestrate_state_dir)/reminder_count"
+			if ((max_reminders > 0)) && ((reminder_count > max_reminders)); then
+				if [[ "$fallback_enabled" == "true" ]]; then
+					log_event "WARN" "attached opencode max reminders reached; falling back"
+					return 94
+				fi
+				return 1
+			fi
+			if ((continue_delay > 0)); then
+				sleep "$continue_delay"
+			fi
+		fi
+
+		last_seen_updated=$UPDATED
+		sleep "$poll_interval"
+	done
+}
+
 _orchestrate_sticky_start_session() {
 	local session_name=$1
+	local runner=$2
 	if tmux has-session -t "$session_name" 2>/dev/null; then
 		return 0
 	fi
-	tmux new -d -s "$session_name" "cd $(printf '%q' "$PROJECT_ROOT") && opencode" || return 1
+	local launch_cmd
+	launch_cmd=$(_orchestrate_sticky_launch_command "$runner") || return 1
+	tmux new -d -s "$session_name" "$launch_cmd" || return 1
 	sleep 1
 	return 0
 }
@@ -545,10 +1010,16 @@ _orchestrate_sticky_start_session() {
 _orchestrate_tmux_send_text() {
 	local session_name=$1
 	local text=$2
+	local runner=${3:-}
 	local stamp
 	stamp=$(date +%s)
 	local msg_file="$(_orchestrate_state_dir)/inject-${stamp}.txt"
 	local buf_name="orchd-orchestrator-${stamp}"
+	case "$runner" in
+	codex)
+		tmux send-keys -t "$session_name" Escape C-u >/dev/null 2>&1 || true
+		;;
+	esac
 	printf '%s\n' "$text" >"$msg_file"
 	tmux load-buffer -b "$buf_name" "$msg_file" || return 1
 	tmux paste-buffer -b "$buf_name" -t "$session_name" || return 1
@@ -564,6 +1035,71 @@ _orchestrate_sticky_capture_output() {
 	tmux capture-pane -p -J -S -1600 -t "$session_name" >"$out_file" 2>/dev/null
 }
 
+_orchestrate_sticky_output_file() {
+	printf '%s/sticky-live.out.txt\n' "$(_orchestrate_iteration_dir)"
+}
+
+_orchestrate_sticky_session_ready() {
+	local runner=$1
+	local out_file=$2
+	[[ -f "$out_file" ]] || return 1
+	case "$runner" in
+	opencode)
+		return 0
+		;;
+	codex)
+		grep -Fq "OpenAI Codex" "$out_file" || return 1
+		grep -Fq "model:     loading" "$out_file" && return 1
+		grep -Fq "Starting MCP servers" "$out_file" && return 1
+		grep -Fq "Reconnecting..." "$out_file" && return 1
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+_orchestrate_sticky_handle_special_prompts() {
+	local runner=$1
+	local session_name=$2
+	local out_file=$3
+	case "$runner" in
+	codex)
+		if grep -Fq "Do you trust the contents of this directory" "$out_file" && ! grep -Fq "OpenAI Codex" "$out_file"; then
+			tmux send-keys -t "$session_name" "1" Enter || return 1
+			sleep 2
+			return 0
+		fi
+		;;
+	esac
+	return 0
+}
+
+_orchestrate_sticky_session_ready_or_fallback() {
+	local runner=$1
+	local session_name=$2
+	local out_file
+	out_file=$(_orchestrate_sticky_output_file)
+	local timeout_sec elapsed
+	timeout_sec=$(_orchestrate_sticky_startup_timeout)
+	for ((elapsed = 0; elapsed < timeout_sec; elapsed++)); do
+		if ! tmux has-session -t "$session_name" 2>/dev/null; then
+			return 1
+		fi
+		_orchestrate_sticky_capture_output "$session_name" "$out_file" || true
+		if grep -Fq "Unexpected status 404" "$out_file" || grep -Fq "Authentication required" "$out_file" || grep -Fq "Please login" "$out_file"; then
+			return 1
+		fi
+		_orchestrate_sticky_handle_special_prompts "$runner" "$session_name" "$out_file" || return 1
+		if _orchestrate_sticky_session_ready "$runner" "$out_file"; then
+			return 0
+		fi
+		sleep 1
+	done
+	return 1
+}
+
 _orchestrate_loop_sticky() {
 	local runner=$1
 	local poll_interval=$2
@@ -575,7 +1111,7 @@ _orchestrate_loop_sticky() {
 	local max_reminders=$8
 	local fallback_on_inject_failure=$9
 
-	if [[ "$runner" != "opencode" ]]; then
+	if ! _orchestrate_sticky_supported_runner "$runner"; then
 		return 93
 	fi
 
@@ -637,9 +1173,16 @@ _orchestrate_loop_sticky() {
 			printf '%s\n' "$prompt" >"$prompt_file"
 			cp "$prompt_file" "$(_orchestrate_state_dir)/last_prompt.txt"
 
-			if ! _orchestrate_sticky_start_session "$session_name"; then
+			if ! _orchestrate_sticky_start_session "$session_name" "$runner"; then
 				if [[ "$fallback_enabled" == "true" ]]; then
 					log_event "WARN" "sticky orchestrator failed to start session; falling back"
+					return 93
+				fi
+				return 1
+			fi
+			if ! _orchestrate_sticky_session_ready_or_fallback "$runner" "$session_name"; then
+				if [[ "$fallback_enabled" == "true" ]]; then
+					log_event "WARN" "sticky orchestrator session did not become ready; falling back"
 					return 93
 				fi
 				return 1
@@ -648,7 +1191,7 @@ _orchestrate_loop_sticky() {
 			printf '[%s] sticky orchestrator inject %d - %s\n' "$(now_iso)" "$iteration" "$reason"
 			_orchestrate_history_append "sticky iteration=$iteration reason=$reason before=$pre_summary"
 
-			if ! _orchestrate_tmux_send_text "$session_name" "$prompt"; then
+			if ! _orchestrate_tmux_send_text "$session_name" "$prompt" "$runner"; then
 				if [[ "$fallback_enabled" == "true" ]]; then
 					log_event "WARN" "sticky orchestrator reminder injection failed; falling back"
 					return 93
@@ -684,7 +1227,7 @@ _orchestrate_loop_sticky() {
 		fi
 
 		local out_file
-		out_file="$(_orchestrate_iteration_dir)/sticky-live.out.txt"
+		out_file=$(_orchestrate_sticky_output_file)
 		if ! _orchestrate_sticky_capture_output "$session_name" "$out_file"; then
 			sleep "$poll_interval"
 			continue

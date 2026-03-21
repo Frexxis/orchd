@@ -43,7 +43,8 @@ Use these to understand current state, remaining work, constraints, and acceptan
 - `orchd plan "<description>"`: AI-generated task DAG.
 - `orchd plan --file <path>` / `orchd plan --stdin`: import externally-produced task DAG.
 - `orchd orchestrate [poll]`: run the supervised AI orchestrator loop.
-- `orchestrator.session_mode = sticky`: for `opencode`, inject reminders into the same live session.
+- `orchestrator.session_mode = attached`: for `opencode`, adopt an existing opencode chat session in the same project and send reminders into that same conversation.
+- `orchestrator.session_mode = sticky`: for `opencode` or `codex`, inject reminders into a managed live session when interactive mode is available.
 - `orchd orchestrate --once`: run one orchestrator turn without the supervisor loop.
 - `orchd orchestrate --daemon [poll]`: keep the orchestrator alive in background.
 - `orchd orchestrate --status|--stop|--logs`: manage the orchestrator daemon.

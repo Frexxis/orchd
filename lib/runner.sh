@@ -155,10 +155,13 @@ _runner_cmd_opencode() {
 	local task_id=$3
 	local log_file="$LOGS_DIR/${task_id}.log"
 	local exit_file="$LOGS_DIR/${task_id}.exit"
+	local opencode_bin
+	opencode_bin=$(config_get "opencode_bin" "opencode")
 
-	printf 'cd %s && PROMPT="$(cat %s)" && opencode -p "$PROMPT" > %s 2>&1; rc=$?; printf "ORCHD_EXIT:%%s\\n" "$rc" >> %s; printf "%%s\\n" "$rc" > %s' \
+	printf 'cd %s && PROMPT="$(cat %s)" && %s -p "$PROMPT" > %s 2>&1; rc=$?; printf "ORCHD_EXIT:%%s\\n" "$rc" >> %s; printf "%%s\\n" "$rc" > %s' \
 		"$(printf '%q' "$worktree")" \
 		"$(printf '%q' "$prompt_file")" \
+		"$opencode_bin" \
 		"$(printf '%q' "$log_file")" \
 		"$(printf '%q' "$log_file")" \
 		"$(printf '%q' "$exit_file")"

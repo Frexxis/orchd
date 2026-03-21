@@ -59,7 +59,9 @@ cmd_review() {
 		}
 		;;
 	opencode)
-		(cd "$PROJECT_ROOT" && opencode -p "$prompt" 2>/dev/null >"$out_file") || {
+		local opencode_bin
+		opencode_bin=$(config_get "opencode_bin" "opencode")
+		(cd "$PROJECT_ROOT" && "$opencode_bin" -p "$prompt" 2>/dev/null >"$out_file") || {
 			die "opencode review failed"
 		}
 		;;

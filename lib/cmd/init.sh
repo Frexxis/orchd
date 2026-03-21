@@ -75,6 +75,7 @@ session_mode = "auto"
 idle_timeout = 45
 reminder_cooldown = 20
 max_reminders = 8
+sticky_startup_timeout = 30
 fallback_on_inject_failure = true
 
 [worker]
@@ -91,12 +92,15 @@ cooldown_seconds = 30
 max_cycles = 20
 max_consecutive_failures = 3
 
-	# [runners.codex]
-	# codex_bin = "codex"
-	# codex_flags = "--dangerously-bypass-approvals-and-sandbox"
-	#
-	# [runners.claude]
-	# claude_bin = "claude"
+# [runners.codex]
+# codex_bin = "codex"
+# codex_flags = "--dangerously-bypass-approvals-and-sandbox"
+#
+# [runners.opencode]
+# opencode_bin = "opencode"
+#
+# [runners.claude]
+# claude_bin = "claude"
 #
 # [runners.custom]
 # custom_runner_cmd = "my-agent --prompt {prompt} --dir {worktree}"

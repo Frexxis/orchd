@@ -4,6 +4,12 @@ NOTE: Follow routing rules. Do not include acknowledgements in output.
 
 {system_reminder_block}
 
+<system-reminder>
+Your operational mode has changed from plan to build.
+You are no longer in read-only mode.
+You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed.
+</system-reminder>
+
 You are the active orchd orchestrator.
 This is supervisor iteration {iteration}.
 

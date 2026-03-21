@@ -244,10 +244,11 @@ supervisor_poll = 30       # orchd orchestrate poll interval
 continue_delay = 1         # delay before forced continuation reinvoke
 max_iterations = 0         # 0 = unlimited orchestrator supervisor iterations
 max_stagnation = 8         # stop after this many unchanged orchestrator turns
-session_mode = "auto"      # auto/sticky/reinvoke (sticky applies to opencode)
+session_mode = "auto"      # auto/attached/sticky/reinvoke
 idle_timeout = 45          # sticky mode: idle seconds before reminder injection
 reminder_cooldown = 20     # sticky mode: minimum seconds between reminders
 max_reminders = 8          # sticky mode: max injected reminders before fallback
+sticky_startup_timeout = 30 # sticky mode: wait this long for interactive session readiness
 fallback_on_inject_failure = true # sticky mode: fallback to re-invoke loop on inject failures
 
 [worker]
@@ -285,10 +286,11 @@ max_consecutive_failures = 3       # stop if ideate fails this many times in a r
 | `orchestrator.continue_delay` | 1 | Delay (seconds) before forced continuation reinvoke |
 | `orchestrator.max_iterations` | 0 | Max supervisor iterations (0 = unlimited) |
 | `orchestrator.max_stagnation` | 8 | Stop after this many unchanged orchestrator turns |
-| `orchestrator.session_mode` | auto | `auto`/`sticky`/`reinvoke`; sticky keeps same opencode session |
+| `orchestrator.session_mode` | auto | `auto`/`attached`/`sticky`/`reinvoke`; `attached` adopts an existing opencode session, `sticky` opens a managed live session |
 | `orchestrator.idle_timeout` | 45 | Sticky mode idle threshold before injecting reminder |
 | `orchestrator.reminder_cooldown` | 20 | Sticky mode minimum seconds between reminders |
 | `orchestrator.max_reminders` | 8 | Sticky mode max reminder injections before fallback |
+| `orchestrator.sticky_startup_timeout` | 30 | Sticky mode wait time for interactive runner readiness |
 | `orchestrator.fallback_on_inject_failure` | true | If sticky injection fails, fallback to classic reinvoke loop |
 | `autopilot_poll` | 30 | Poll interval (seconds) in autopilot loop |
 | `autopilot_max_iterations` | 0 | Max autopilot iterations (0 = unlimited) |
@@ -370,7 +372,7 @@ Core principles, roles, agent CLI standards, prompt contracts, launch sequences,
 
 7. **`orchd orchestrate`** runs an AI orchestrator under supervisor control. If the orchestrator stops before the project reaches a terminal state, orchd automatically rebuilds context, injects a system reminder, and reinvokes it. If workers are running, the supervisor handles `orchd await --all` and resumes the orchestrator when state changes.
 
-8. **`orchd autopilot`** defaults to the supervised AI orchestrator engine (same behavior as `orchd orchestrate`), so if the orchestrator stops early, orchd reinvokes it with a system reminder until terminal state. Use `orchd autopilot --deterministic` for the legacy deterministic spawn/check/merge loop.
+8. **`orchd autopilot`** defaults to the supervised AI orchestrator engine (same behavior as `orchd orchestrate`), so if the orchestrator stops early, orchd reinvokes it with a system reminder until terminal state. With `opencode` and `session_mode=auto|attached`, orchd first tries to adopt the existing opencode session and send the reminder into that same conversation. Use `orchd autopilot --deterministic` for the legacy deterministic spawn/check/merge loop.
 
 ## Memory Bank
 
