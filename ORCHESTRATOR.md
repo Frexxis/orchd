@@ -45,6 +45,7 @@ Use these to understand current state, remaining work, constraints, and acceptan
 - `orchd orchestrate [poll]`: run the supervised AI orchestrator loop.
 - `orchestrator.session_mode = attached`: for `opencode`, adopt an existing opencode chat session in the same project and send reminders into that same conversation.
 - `orchestrator.session_mode = sticky`: for `opencode` or `codex`, inject reminders into a managed live session when interactive mode is available.
+- `orchestrator.stop_policy = needs_input_only`: keep nudging the orchestrator even after apparent completion; only stop on a real blocker or explicit user stop.
 - `orchd orchestrate --once`: run one orchestrator turn without the supervisor loop.
 - `orchd orchestrate --daemon [poll]`: keep the orchestrator alive in background.
 - `orchd orchestrate --status|--stop|--logs`: manage the orchestrator daemon.

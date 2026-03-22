@@ -183,6 +183,14 @@ _orchestrate_session_snapshot_file() {
 	printf '%s/opencode_session_snapshot.json\n' "$(_orchestrate_state_dir)"
 }
 
+_orchestrate_last_idle_decision_file() {
+	printf '%s/last_idle_decision\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_last_reminder_reason_file() {
+	printf '%s/last_reminder_reason\n' "$(_orchestrate_state_dir)"
+}
+
 _orchestrate_opencode_bin() {
 	config_get "opencode_bin" "opencode"
 }
@@ -254,7 +262,12 @@ _orchestrate_opencode_list_sessions_json() {
 
 _orchestrate_opencode_export_session_json() {
 	local session_id=$1
-	_orchestrate_opencode_run export "$session_id"
+	_orchestrate_opencode_run export "$session_id" | python -c 'import sys; raw=sys.stdin.read();
+idx=raw.find("\n") if raw.startswith("Exporting session:") else -1;
+raw=raw[idx+1:] if idx!=-1 else raw;
+start=raw.find("{");
+raw=raw[start:] if start!=-1 else raw;
+sys.stdout.write(raw)'
 }
 
 _orchestrate_opencode_continue_session() {
@@ -295,60 +308,44 @@ else:
 PY
 }
 
+_orchestrate_opencode_session_meta_json() {
+	local session_id=$1
+	local sessions_json
+	sessions_json=$(_orchestrate_opencode_list_sessions_json 2>/dev/null || true)
+	[[ -n "$sessions_json" ]] || return 1
+	python - "$session_id" "$sessions_json" <<'PY'
+import json, sys
+sid = sys.argv[1]
+sessions = json.loads(sys.argv[2])
+for sess in sessions:
+    if sess.get('id') == sid:
+        print(json.dumps(sess, ensure_ascii=False))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 _orchestrate_opencode_session_snapshot() {
 	local session_id=$1
-	local export_json
-	export_json=$(_orchestrate_opencode_export_session_json "$session_id" 2>/dev/null || true)
-	[[ -n "$export_json" ]] || return 1
-	python - "$export_json" <<'PY'
+	local meta_json
+	meta_json=$(_orchestrate_opencode_session_meta_json "$session_id" 2>/dev/null || true)
+	[[ -n "$meta_json" ]] || return 1
+	python - "$meta_json" <<'PY'
 import json, sys
-raw = sys.argv[1]
-try:
-    data = json.loads(raw)
-except Exception:
-    raise SystemExit(1)
-messages = data.get("messages") or []
-last_role = ""
-last_text = ""
-last_created = 0
-last_completed = 0
-last_assistant_completed = 0
-last_user_created = 0
-for msg in messages:
-    info = msg.get("info") or {}
-    role = info.get("role") or ""
-    time = info.get("time") or {}
-    created = int(time.get("created") or 0)
-    completed = int(time.get("completed") or created or 0)
-    parts = msg.get("parts") or []
-    texts = []
-    for part in parts:
-        if part.get("type") == "text":
-            txt = part.get("text") or ""
-            if txt.strip():
-                texts.append(txt.strip())
-    if role:
-        last_role = role
-        last_text = "\n".join(texts)[-8000:]
-        last_created = created
-        last_completed = completed
-    if role == "assistant":
-        last_assistant_completed = max(last_assistant_completed, completed)
-    elif role == "user":
-        last_user_created = max(last_user_created, created)
+meta = json.loads(sys.argv[1])
 snapshot = {
-    "session_id": data.get("info", {}).get("id", ""),
-    "directory": data.get("info", {}).get("directory", ""),
-    "title": data.get("info", {}).get("title", ""),
-    "updated": int(data.get("info", {}).get("time", {}).get("updated") or 0),
-    "created": int(data.get("info", {}).get("time", {}).get("created") or 0),
-    "last_role": last_role,
-    "last_text": last_text,
-    "last_created": last_created,
-    "last_completed": last_completed,
-    "last_assistant_completed": last_assistant_completed,
-    "last_user_created": last_user_created,
-    "message_count": len(messages),
+    "session_id": meta.get("id", ""),
+    "directory": meta.get("directory", ""),
+    "title": meta.get("title", ""),
+    "updated": int(meta.get("updated") or 0),
+    "created": int(meta.get("created") or 0),
+    "last_role": "assistant",
+    "last_text": "",
+    "last_created": 0,
+    "last_completed": 0,
+    "last_assistant_completed": 0,
+    "last_user_created": 0,
+    "message_count": 0,
 }
 print(json.dumps(snapshot, ensure_ascii=False))
 PY
@@ -681,6 +678,25 @@ _orchestrate_session_action_required() {
 	return 1
 }
 
+_orchestrate_session_blocked_only() {
+	if ((ORCH_STATE_NEEDS_INPUT <= 0)); then
+		return 1
+	fi
+	if ((ORCH_STATE_PENDING > 0 || ORCH_STATE_RUNNING > 0 || ORCH_STATE_DONE > 0)); then
+		return 1
+	fi
+	if ((ORCH_READY_SPAWN > 0 || ORCH_READY_CHECK > 0 || ORCH_READY_MERGE > 0)); then
+		return 1
+	fi
+	if ((ORCH_QUEUE_PENDING > 0 || ORCH_QUEUE_IN_PROGRESS > 0)); then
+		return 1
+	fi
+	if ((ORCH_STATE_FAILED > 0 || ORCH_STATE_CONFLICT > 0)); then
+		return 1
+	fi
+	return 0
+}
+
 _build_orchestrator_prompt() {
 	local iteration=$1
 	local reason=$2
@@ -826,6 +842,8 @@ _orchestrate_loop_attached_opencode() {
 	local reminder_cooldown=$6
 	local max_reminders=$7
 	local fallback_on_inject_failure=$8
+	local stop_policy
+	stop_policy=$(printf '%s' "$(config_get "orchestrator.stop_policy" "needs_input_only")" | tr '[:upper:]' '[:lower:]')
 
 	local fallback_enabled=true
 	if ! is_truthy "$fallback_on_inject_failure"; then
@@ -885,22 +903,27 @@ _orchestrate_loop_attached_opencode() {
 		printf '%s\n' "$LAST_TEXT" >"$(_orchestrate_state_dir)/last_output.txt"
 
 		_orchestrate_collect_state
-		local summary state_json state_fingerprint prev_state_fingerprint
+		local summary state_json state_fingerprint prev_state_fingerprint prev_updated
+		local work_remaining=true
 		summary=$(_orchestrate_state_summary)
 		state_json=$(cmd_state --json)
 		printf '%s\n' "$state_json" >"$(_orchestrate_state_dir)/current_state.json"
 		prev_state_fingerprint=$last_state_fingerprint
+		prev_updated=$last_seen_updated
 		state_fingerprint=$(printf '%s' "$state_json" | git hash-object --stdin)
 
-		if [[ -n "$prev_state_fingerprint" ]] && [[ "$state_fingerprint" == "$prev_state_fingerprint" ]]; then
+		if [[ -n "$prev_state_fingerprint" ]] && [[ "$state_fingerprint" == "$prev_state_fingerprint" ]] && [[ "$UPDATED" == "$prev_updated" ]]; then
 			stagnation=$((stagnation + 1))
 		else
 			stagnation=0
 		fi
 		last_state_fingerprint="$state_fingerprint"
 		printf '%s\n' "$stagnation" >"$(_orchestrate_state_dir)/stagnation_count"
+		if ! _orchestrate_session_action_required; then
+			work_remaining=false
+		fi
 
-		if ((stagnation >= max_stagnation)); then
+		if ((max_stagnation > 0)) && ((stagnation >= max_stagnation)); then
 			if [[ "$fallback_enabled" == "true" ]]; then
 				log_event "WARN" "attached opencode session stagnated; falling back"
 				return 94
@@ -908,14 +931,10 @@ _orchestrate_loop_attached_opencode() {
 			printf 'attached opencode session stalled after %d unchanged cycles\n' "$stagnation"
 			return 1
 		fi
-
-		if ! _orchestrate_session_action_required; then
-			if _orchestrate_completion_eligible; then
-				printf 'project complete (attached orchestrator)\n'
-				return 0
-			fi
-			sleep "$poll_interval"
-			continue
+		if [[ "$stop_policy" == "needs_input_only" ]] && _orchestrate_session_blocked_only; then
+			printf 'orchestrator needs input (attached session blocker state)\n'
+			printf '%s\n' "blocked_only" >"$(_orchestrate_last_idle_decision_file)"
+			return 2
 		fi
 
 		local now_ms
@@ -938,18 +957,29 @@ _orchestrate_loop_attached_opencode() {
 
 		local should_remind=false
 		local remind_reason=""
-		if [[ "$LAST_ROLE" == "assistant" ]] && [[ "$cooldown_ok" == "true" ]]; then
+		if [[ "$cooldown_ok" == "true" ]]; then
 			if [[ "$passive_stop" == "true" ]]; then
 				should_remind=true
 				remind_reason="system reminder: you ended with a passive handoff. Continue autonomous orchestration immediately."
 			elif ((idle_ms >= idle_timeout * 1000)); then
 				should_remind=true
-				remind_reason="system reminder: the orchestrator session went idle while work remains. Continue orchestration now."
+				if [[ "$work_remaining" == "true" ]]; then
+					remind_reason="system reminder: the orchestrator session went idle while work remains. Continue orchestration now."
+				else
+					remind_reason="system reminder: the orchestrator session went idle with no active tasks. Verify completion and, if there is still product value to add, use orchd ideate/plan and continue orchestrating."
+				fi
 			fi
 		fi
 		if [[ "$state_changed" == "true" ]]; then
 			should_remind=true
 			remind_reason="system reminder: orchd state changed while your session was idle. Re-read state and continue orchestration."
+		fi
+		if [[ "$should_remind" == "false" ]]; then
+			if [[ "$work_remaining" == "true" ]]; then
+				printf '%s\n' "waiting_for_idle_with_work" >"$(_orchestrate_last_idle_decision_file)"
+			else
+				printf '%s\n' "waiting_for_idle_to_ideate" >"$(_orchestrate_last_idle_decision_file)"
+			fi
 		fi
 
 		if [[ "$should_remind" == "true" ]]; then
@@ -967,6 +997,8 @@ _orchestrate_loop_attached_opencode() {
 			err_file="$(_orchestrate_iteration_dir)/${prefix}.stderr.log"
 			printf '[%s] attached orchestrator remind %d - %s\n' "$(now_iso)" "$iteration" "$remind_reason"
 			_orchestrate_history_append "attached iteration=$iteration session=$session_id reason=$remind_reason before=$summary"
+			printf '%s\n' "$remind_reason" >"$(_orchestrate_last_reminder_reason_file)"
+			printf '%s\n' "reminder_sent" >"$(_orchestrate_last_idle_decision_file)"
 			if ! _orchestrate_opencode_continue_session "$session_id" "$reminder_prompt" >"$out_file" 2>"$err_file"; then
 				if [[ "$fallback_enabled" == "true" ]]; then
 					log_event "WARN" "attached opencode reminder injection failed; falling back"

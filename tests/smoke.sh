@@ -932,13 +932,66 @@ IDEATE_COMPLETE_RC=$(
 	# shellcheck disable=SC2034
 	LOGS_DIR="$ORCHD_DIR/logs"
 	set +e
-	_ideate_parse_output "$IDEATE_COMPLETE_OUT" true >/dev/null 2>&1
+	_ideate_parse_output "$IDEATE_COMPLETE_OUT" true true >/dev/null 2>&1
 	echo "$?"
 )
 if [[ "$IDEATE_COMPLETE_RC" == "2" ]]; then
-	pass "ideate parse returns PROJECT_COMPLETE"
+	pass "ideate parse returns PROJECT_COMPLETE in strict mode"
 else
-	fail "ideate parse returns PROJECT_COMPLETE (expected 2, got: $IDEATE_COMPLETE_RC)"
+	fail "ideate parse returns PROJECT_COMPLETE in strict mode (expected 2, got: $IDEATE_COMPLETE_RC)"
+fi
+
+IDEATE_FOLLOW_ON_RC=$(
+	cd "$INIT_DIR" || exit 1
+	# shellcheck source=../lib/core.sh
+	source "$ORCHD_LIB_DIR/core.sh"
+	# shellcheck source=../lib/cmd/ideate.sh
+	source "$ORCHD_LIB_DIR/cmd/ideate.sh"
+	# shellcheck disable=SC2034
+	PROJECT_ROOT="$INIT_DIR"
+	ORCHD_DIR="$INIT_DIR/.orchd"
+	# shellcheck disable=SC2034
+	TASKS_DIR="$ORCHD_DIR/tasks"
+	# shellcheck disable=SC2034
+	LOGS_DIR="$ORCHD_DIR/logs"
+	set +e
+	_ideate_parse_output "$IDEATE_COMPLETE_OUT" true false >/dev/null 2>&1
+	echo "$?"
+)
+if [[ "$IDEATE_FOLLOW_ON_RC" == "2" ]]; then
+	pass "ideate parse defers PROJECT_COMPLETE in follow-on mode"
+else
+	fail "ideate parse defers PROJECT_COMPLETE in follow-on mode (expected 2, got: $IDEATE_FOLLOW_ON_RC)"
+fi
+
+IDEATE_FOLLOW_ON_RUNNER="$INIT_DIR/.orchd/ideate_follow_on_runner.sh"
+cat >"$IDEATE_FOLLOW_ON_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+worktree=$1
+counter_file="$worktree/.orchd/ideate_follow_on_counter"
+count=$(cat "$counter_file" 2>/dev/null || printf '0')
+count=$((count + 1))
+printf '%s\n' "$count" >"$counter_file"
+if [[ "$count" == "1" ]]; then
+	printf 'PROJECT_COMPLETE\n'
+	printf 'REASON: The original brief is fully shipped.\n'
+	exit 0
+fi
+printf 'IDEA: Add release telemetry dashboards\n'
+printf 'REASON: Improves post-launch observability after the original scope ships.\n'
+EOF
+chmod +x "$IDEATE_FOLLOW_ON_RUNNER"
+printf '\ncustom_runner_cmd = "%s {worktree}"\n' "$IDEATE_FOLLOW_ON_RUNNER" >>"$INIT_DIR/.orchd.toml"
+run_in_dir "$INIT_DIR" "$ORCHD" idea clear --force >/dev/null 2>&1 || true
+
+assert_exit_0 "ideate retries with follow-on pass after PROJECT_COMPLETE" run_in_dir "$INIT_DIR" "$ORCHD" ideate --runner custom
+assert_output_contains "ideate follow-on queues next-phase idea" "Add release telemetry dashboards" run_in_dir "$INIT_DIR" "$ORCHD" idea list
+
+if [[ $(cat "$INIT_DIR/.orchd/ideate_follow_on_counter" 2>/dev/null || printf '0') == "2" ]]; then
+	pass "ideate follow-on runner is invoked twice"
+else
+	fail "ideate follow-on runner is invoked twice"
 fi
 
 # --- Summary ---

@@ -32,14 +32,18 @@ You are a senior engineering lead reviewing a software project to determine what
 Analyze the project brief against current progress and the codebase.
 Determine what concrete work remains to fulfill ALL project goals defined in the brief.
 
+## Ideation Policy
+
+Current completion policy: {completion_policy_name}
+
+{completion_policy_instructions}
+
 Rules:
-- ONLY suggest work that is IN SCOPE per the project brief
 - Do NOT repeat work already completed or listed in completed ideas
 - Do NOT suggest vague, meta, or process-oriented tasks (e.g. "review code", "improve docs")
 - Each idea must be a concrete, implementable unit of work
 - Suggest 1-5 ideas, ordered by priority (most impactful first)
 - Consider dependencies: suggest foundational work before dependent features
-- If ALL goals and scope items in the project brief are fully met, output ONLY: PROJECT_COMPLETE
 
 ## Output Format
 
@@ -51,4 +55,4 @@ REASON: <which project goal this serves and why it is needed now>
 OR if the project is complete:
 
 PROJECT_COMPLETE
-REASON: <brief explanation of why all goals defined in the project brief are met>
+REASON: <brief explanation of why all goals defined in the project brief are met or why no meaningful next step remains>

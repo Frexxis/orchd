@@ -416,3 +416,88 @@ Rollback note (2026-03-21 opencode orchestrator + codex workers)
 Risks/notes (2026-03-21 opencode orchestrator + codex workers)
 - `orchd doctor` still reports the worker/default runner path, so it shows `codex` even when the orchestrator is explicitly configured to `opencode`; this is expected with the current doctor output.
 - Attached opencode mode works best when the orchestrator chat title clearly references `orchd`/`orchestrator`, because that increases the chance orchd adopts the intended conversation.
+
+---
+
+Summary of changes (2026-03-22 attached session idle-first rewrite)
+- Reworked attached `opencode` supervision so reminders are session-idle-first instead of task-state-first.
+- Attached mode no longer stops just because the current task graph looks complete; with `stop_policy = "needs_input_only"` it now keeps reminding the orchestrator to verify completion and ideate new work after idle periods.
+- Added observability files for attached mode (`last_idle_decision`, `last_reminder_reason`) and switched project configs to unlimited reminders (`max_reminders = 0`) with the new stop policy.
+
+Files modified/created (2026-03-22 attached session idle-first rewrite)
+- `lib/cmd/orchestrate.sh` (updated)
+- `lib/cmd/init.sh` (updated)
+- `README.md` (updated)
+- `ORCHESTRATOR.md` (updated)
+- `orchestrator-runbook.md` (updated)
+- `/home/muhammetali/Projeler/bloom/.orchd.toml` (updated)
+- `/home/muhammetali/Projeler/Macro-Studio/.orchd.toml` (updated)
+- `/home/muhammetali/Projeler/bloom/ORCHESTRATOR.md` (updated via refresh)
+- `/home/muhammetali/Projeler/bloom/orchestrator-runbook.md` (updated via refresh)
+- `/home/muhammetali/Projeler/Macro-Studio/ORCHESTRATOR.md` (updated via refresh)
+- `/home/muhammetali/Projeler/Macro-Studio/orchestrator-runbook.md` (updated via refresh)
+- `TASK_REPORT.md` (updated)
+
+Evidence (2026-03-22 attached session idle-first rewrite)
+EVIDENCE:
+- CMD: `bash -n "lib/cmd/orchestrate.sh" && bash -n "lib/cmd/init.sh" && bash -n "bin/orchd"`
+  RESULT: PASS
+  OUTPUT: Syntax checks passed after the idle-first attached-session rewrite.
+
+EVIDENCE:
+- CMD: `orchd orchestrate --status` and `cat .orchd/orchestrator/supervisor.log` in `/home/muhammetali/Projeler/bloom`
+  RESULT: PASS
+  OUTPUT: Bloom now shows a running attached opencode supervisor and logs `attached orchestrator remind 1 - system reminder: the orchestrator session went idle with no active tasks...` after the idle timeout.
+
+EVIDENCE:
+- CMD: `cat .orchd/orchestrator/last_idle_decision` and `cat .orchd/orchestrator/last_reminder_reason` in `/home/muhammetali/Projeler/bloom`
+  RESULT: PASS
+  OUTPUT: Attached mode records `reminder_sent` plus the no-active-work ideate reminder reason, proving completion no longer causes an immediate stop.
+
+Rollback note (2026-03-22 attached session idle-first rewrite)
+- Trigger rollback if always-on idle reminders create unwanted prompt spam after genuine completion.
+- Revert by restoring `max_reminders` to a bounded value and changing `stop_policy` away from `needs_input_only`, or by reverting the attached-session loop changes in `lib/cmd/orchestrate.sh`.
+
+Risks/notes (2026-03-22 attached session idle-first rewrite)
+- Because attached mode now favors persistence over automatic shutdown, users should explicitly stop the supervisor when they truly want orchestration to end.
+- `opencode export` for very large sessions can still be unreliable; the attached loop now works from `session list` metadata first, so reminder triggering no longer depends on full export success.
+
+---
+
+Summary of changes (2026-03-22 ideate follow-on completion policy)
+- Added a configurable ideation completion policy so `orchd ideate` can keep producing high-value next-phase ideas after the original project brief is fully shipped.
+- Made `expand_after_scope` the default behavior for new projects and strengthened the ideation prompt so post-scope ideas stay concrete, professional, and grounded in the existing product/codebase.
+- Added a forced follow-on retry path: if a model still emits `PROJECT_COMPLETE` in follow-on mode, orchd immediately reruns ideation with a stricter next-phase-only override instead of stopping.
+
+Files modified/created (2026-03-22 ideate follow-on completion policy)
+- `lib/cmd/ideate.sh` (updated)
+- `templates/ideate.prompt` (updated)
+- `lib/cmd/init.sh` (updated)
+- `README.md` (updated)
+- `tests/smoke.sh` (updated)
+- `TASK_REPORT.md` (updated)
+
+Evidence (2026-03-22 ideate follow-on completion policy)
+EVIDENCE:
+- CMD: `bash -n "bin/orchd" && bash -n "lib/cmd/ideate.sh" && bash -n "lib/cmd/init.sh"`
+  RESULT: PASS
+  OUTPUT: Shell syntax checks passed for the ideation command, init defaults, and top-level CLI entrypoint.
+
+EVIDENCE:
+- CMD: targeted temp-repo run of `orchd ideate --runner custom` where the custom runner returns `PROJECT_COMPLETE` on pass 1 and an `IDEA:` on pass 2
+  RESULT: PASS
+  OUTPUT: orchd deferred the first completion, invoked a follow-on ideation pass, and queued `Add release telemetry dashboards`.
+
+EVIDENCE:
+- CMD: `./tests/smoke.sh`
+  RESULT: FAIL
+  OUTPUT: 139 passed, 2 failed. Remaining failures are the pre-existing `[12] Autopilot merges done tasks` checks (`exit 93`, task remains `done`).
+
+Rollback note (2026-03-22 ideate follow-on completion policy)
+- Trigger rollback if ideation starts generating low-signal backlog after scope completion, or if deterministic workflows that rely on immediate `PROJECT_COMPLETE` need the old semantics.
+- Revert by restoring the previous `lib/cmd/ideate.sh`, `templates/ideate.prompt`, `lib/cmd/init.sh`, `README.md`, and `tests/smoke.sh`, or set `completion_policy = "strict_scope"` in affected projects.
+
+Risks/notes (2026-03-22 ideate follow-on completion policy)
+- Existing projects do not need config changes because the code now defaults missing `ideate.completion_policy` values to `expand_after_scope`.
+- `strict_scope` remains available via config or `orchd ideate --strict-scope` when a project truly wants terminal scope-bound ideation.
+- The smoke-suite failures are outside this change area and appear to be the existing deterministic autopilot regression.

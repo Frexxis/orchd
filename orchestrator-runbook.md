@@ -112,6 +112,8 @@ This keeps an AI orchestrator alive under supervisor control. If the agent stops
 
 With `opencode`, keeping `orchestrator.session_mode = "auto"` lets orchd first try to adopt the most recent opencode session in the current project and inject reminders into that same conversation (oh-my-openagent-style continuation). If no suitable session exists, orchd falls back to managed sticky/reinvoke behavior. With `codex`, sticky mode still uses a managed interactive session.
 
+For an always-on orchestrator, prefer `orchestrator.stop_policy = "needs_input_only"` and `max_reminders = 0`; this keeps sending continuation reminders when the session goes idle, even if the current task graph looks complete.
+
 For a deterministic built-in loop, use autopilot's deterministic engine explicitly:
 
 ```bash

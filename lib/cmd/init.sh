@@ -74,8 +74,9 @@ max_stagnation = 8
 session_mode = "auto"
 idle_timeout = 45
 reminder_cooldown = 20
-max_reminders = 8
+max_reminders = 0
 sticky_startup_timeout = 30
+stop_policy = "needs_input_only"
 fallback_on_inject_failure = true
 
 [worker]
@@ -87,6 +88,7 @@ test_cmd = ""
 build_cmd = ""
 
 [ideate]
+completion_policy = "expand_after_scope"
 max_ideas = 5
 cooldown_seconds = 30
 max_cycles = 20

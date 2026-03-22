@@ -140,6 +140,7 @@ orchd merge --all
 | `orchd ideate` | Ask the AI for the next 1–5 ideas from `docs/memory/` + codebase context |
 | `orchd ideate --dry-run` | Show suggested ideas without queueing |
 | `orchd ideate --runner <runner>` | Override runner for ideation |
+| `orchd ideate --completion-policy <policy>` | Control whether ideation stops at scope completion or keeps proposing next-phase work |
 
 ### Fleet Management
 
@@ -247,8 +248,9 @@ max_stagnation = 8         # stop after this many unchanged orchestrator turns
 session_mode = "auto"      # auto/attached/sticky/reinvoke
 idle_timeout = 45          # sticky mode: idle seconds before reminder injection
 reminder_cooldown = 20     # sticky mode: minimum seconds between reminders
-max_reminders = 8          # sticky mode: max injected reminders before fallback
+max_reminders = 0          # 0 = unlimited reminders before fallback/stop
 sticky_startup_timeout = 30 # sticky mode: wait this long for interactive session readiness
+stop_policy = "needs_input_only" # keep reminding unless the session reaches a real blocker
 fallback_on_inject_failure = true # sticky mode: fallback to re-invoke loop on inject failures
 
 [worker]
@@ -260,6 +262,7 @@ test_cmd = "npm test"      # run during orchd check
 build_cmd = "npm run build"
 
 [ideate]
+completion_policy = "expand_after_scope" # default: continue with next-phase ideas after original scope is done
 max_ideas = 5                    # max ideas per ideate call
 cooldown_seconds = 30             # cooldown between ideate cycles in --continuous
 max_cycles = 20                   # max ideate cycles before stopping
@@ -289,8 +292,9 @@ max_consecutive_failures = 3       # stop if ideate fails this many times in a r
 | `orchestrator.session_mode` | auto | `auto`/`attached`/`sticky`/`reinvoke`; `attached` adopts an existing opencode session, `sticky` opens a managed live session |
 | `orchestrator.idle_timeout` | 45 | Sticky mode idle threshold before injecting reminder |
 | `orchestrator.reminder_cooldown` | 20 | Sticky mode minimum seconds between reminders |
-| `orchestrator.max_reminders` | 8 | Sticky mode max reminder injections before fallback |
+| `orchestrator.max_reminders` | 0 | Sticky/attached mode max reminder injections before fallback; `0` means unlimited |
 | `orchestrator.sticky_startup_timeout` | 30 | Sticky mode wait time for interactive runner readiness |
+| `orchestrator.stop_policy` | needs_input_only | `needs_input_only` keeps reminding until a real blocker; attached mode no longer stops just because work looks complete |
 | `orchestrator.fallback_on_inject_failure` | true | If sticky injection fails, fallback to classic reinvoke loop |
 | `autopilot_poll` | 30 | Poll interval (seconds) in autopilot loop |
 | `autopilot_max_iterations` | 0 | Max autopilot iterations (0 = unlimited) |
@@ -423,7 +427,7 @@ orchd autopilot --deterministic --continuous
 2. In deterministic mode (`orchd autopilot --deterministic`), when autopilot reaches a terminal state (all tasks merged/failed/needs_input/conflict), it calls the queue drain.
 3. The drain pops the next pending idea (marks it `[>]` in-progress), runs `orchd plan "$idea"` to generate a fresh task DAG, and restarts the deterministic loop.
 4. When that idea's tasks complete, the idea is marked `[x]` (done) and the next one is popped.
-5. In deterministic continuous mode (`--deterministic --continuous`), orchd runs `orchd ideate` to generate the next backlog. When the AI outputs `PROJECT_COMPLETE`, autopilot stops.
+5. In deterministic continuous mode (`--deterministic --continuous`), orchd runs `orchd ideate` to generate the next backlog. With `completion_policy = "expand_after_scope"` it keeps proposing next-phase work after the original brief ships; with `strict_scope` it stops on `PROJECT_COMPLETE`.
 
 Ideas keep a full audit trail in `queue.md` — you can see which ideas were completed, which are in-progress, and which are still pending. If no AI runner is available, queue drain is skipped and ideas are preserved.
 
