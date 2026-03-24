@@ -34,11 +34,14 @@ cmd_spawn() {
 
 	require_project
 
+	local default_runner
+	default_runner=$(detect_runner)
+
 	local runner
 	if [[ -n "$runner_override" ]]; then
 		runner="$runner_override"
 	else
-		runner=$(detect_runner)
+		runner=$(swarm_select_runner_for_role "builder" "$default_runner")
 	fi
 	runner_validate "$runner"
 
@@ -64,7 +67,7 @@ _spawn_single() {
 	running)
 		die "task already running: $task_id"
 		;;
-	merged)
+	merged | split)
 		die "task already merged: $task_id"
 		;;
 	done)
@@ -104,6 +107,12 @@ _spawn_single() {
 	task_set "$task_id" "branch" "$branch"
 	task_set "$task_id" "worktree" "$worktree_path"
 	task_set "$task_id" "runner" "$runner"
+	if [[ -n "$runner_override" ]]; then
+		swarm_task_set_route_metadata "$task_id" "builder" "$runner" "$default_runner" "manual runner override for builder role" "false" "$(swarm_role_candidates_csv "builder")"
+	else
+		swarm_resolve_route "builder" "$default_runner" >/dev/null
+		swarm_task_set_route_metadata "$task_id" "builder" "$runner" "$default_runner" "$SWARM_ROUTE_REASON" "$SWARM_ROUTE_FALLBACK_USED" "$SWARM_ROUTE_CANDIDATES"
+	fi
 	task_prepare_new_attempt "$task_id"
 
 	# Launch agent
@@ -140,6 +149,20 @@ _spawn_all_ready() {
 
 	printf 'scanning tasks... (max_parallel=%s, currently_running=%s)\n\n' "$max_parallel" "$running"
 
+	local ready_ids=()
+	local task_id status
+	while IFS= read -r task_id; do
+		[[ -z "$task_id" ]] && continue
+		if task_is_ready "$task_id"; then
+			ready_ids+=("$task_id")
+		else
+			status=$(task_status "$task_id")
+			if [[ "$status" == "pending" ]]; then
+				skipped=$((skipped + 1))
+			fi
+		fi
+	done <<<"$(task_list_ids)"
+
 	local failed=0
 	while IFS= read -r task_id; do
 		[[ -z "$task_id" ]] && continue
@@ -149,21 +172,13 @@ _spawn_all_ready() {
 			break
 		fi
 
-		if task_is_ready "$task_id"; then
-			if (_spawn_single "$task_id" "$runner"); then
-				spawned=$((spawned + 1))
-			else
-				printf 'warning: failed to spawn %s, continuing...\n' "$task_id" >&2
-				failed=$((failed + 1))
-			fi
+		if (_spawn_single "$task_id" "$runner"); then
+			spawned=$((spawned + 1))
 		else
-			local status
-			status=$(task_status "$task_id")
-			if [[ "$status" == "pending" ]]; then
-				skipped=$((skipped + 1))
-			fi
+			printf 'warning: failed to spawn %s, continuing...\n' "$task_id" >&2
+			failed=$((failed + 1))
 		fi
-	done <<<"$(task_list_ids)"
+	done <<<"$(swarm_sort_ready_tasks "${ready_ids[@]}")"
 
 	printf '\nspawned: %d  skipped (waiting for deps): %d  already running: %d' \
 		"$spawned" "$skipped" "$running"
@@ -195,6 +210,17 @@ _build_kickoff_prompt() {
 	description=$(task_get "$task_id" "description" "Implement $task_id")
 	acceptance=$(task_get "$task_id" "acceptance" "All tests pass")
 	role=$(task_get "$task_id" "role" "domain")
+	local task_size task_risk task_blast_radius task_file_hints task_recommended_verification
+	task_size=$(task_get "$task_id" "size" "")
+	task_risk=$(task_get "$task_id" "risk" "")
+	task_blast_radius=$(task_get "$task_id" "blast_radius" "")
+	task_file_hints=$(task_get "$task_id" "file_hints" "")
+	task_recommended_verification=$(task_get "$task_id" "recommended_verification" "")
+	[[ -n "$task_size" ]] || task_size="unspecified"
+	[[ -n "$task_risk" ]] || task_risk="unspecified"
+	[[ -n "$task_blast_radius" ]] || task_blast_radius="unspecified"
+	[[ -n "$task_file_hints" ]] || task_file_hints="unspecified"
+	[[ -n "$task_recommended_verification" ]] || task_recommended_verification="auto"
 	local execution_only no_planning commit_required execution_mode_instructions
 	execution_only=$(task_get_bool "$task_id" "execution_only" "false")
 	no_planning=$(task_get_bool "$task_id" "no_planning" "false")
@@ -225,6 +251,11 @@ _build_kickoff_prompt() {
 	prompt=$(replace_token "$prompt" "{no_planning}" "$no_planning")
 	prompt=$(replace_token "$prompt" "{commit_required}" "$commit_required")
 	prompt=$(replace_token "$prompt" "{execution_mode_instructions}" "$execution_mode_instructions")
+	prompt=$(replace_token "$prompt" "{task_size}" "$task_size")
+	prompt=$(replace_token "$prompt" "{task_risk}" "$task_risk")
+	prompt=$(replace_token "$prompt" "{task_blast_radius}" "$task_blast_radius")
+	prompt=$(replace_token "$prompt" "{task_file_hints}" "$task_file_hints")
+	prompt=$(replace_token "$prompt" "{task_recommended_verification}" "$task_recommended_verification")
 
 	# Inject memory bank context
 	local memory_ctx

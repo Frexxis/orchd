@@ -82,6 +82,27 @@ fallback_on_inject_failure = true
 [worker]
 runner = "$runner"
 
+[swarm.policy]
+optimize_for = "balanced"
+allow_fallback = true
+verification_policy = "adaptive"
+auto_review = true
+
+# [swarm.roles]
+# planner = ["claude", "codex", "opencode"]
+# builder = ["codex", "claude", "opencode"]
+# reviewer = ["claude", "codex"]
+# recovery = ["claude", "opencode"]
+
+# [swarm.capabilities.claude]
+# tags = ["long_context", "strong_review", "spec_reasoning", "interactive_resume"]
+
+# [swarm.capabilities.codex]
+# tags = ["fast_patch", "tool_heavy"]
+
+# [swarm.capabilities.opencode]
+# tags = ["cheap_execution", "fast_patch"]
+
 [quality]
 lint_cmd = ""
 test_cmd = ""

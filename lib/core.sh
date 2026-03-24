@@ -17,7 +17,11 @@ find_project_root() {
 }
 
 require_project() {
-	PROJECT_ROOT=$(find_project_root) || die "not an orchd project (no .orchd.toml found). Run: orchd init"
+	if [[ -n "${PROJECT_ROOT:-}" ]] && [[ -f "$PROJECT_ROOT/.orchd.toml" ]]; then
+		PROJECT_ROOT=$(cd "$PROJECT_ROOT" && pwd -P)
+	else
+		PROJECT_ROOT=$(find_project_root) || die "not an orchd project (no .orchd.toml found). Run: orchd init"
+	fi
 	ORCHD_DIR="$PROJECT_ROOT/.orchd"
 	TASKS_DIR="$ORCHD_DIR/tasks"
 	LOGS_DIR="$ORCHD_DIR/logs"
@@ -143,6 +147,63 @@ config_get_int() {
 	fi
 }
 
+_config_trim_spaces() {
+	local value=${1-}
+	value=${value#"${value%%[![:space:]]*}"}
+	value=${value%"${value##*[![:space:]]}"}
+	printf '%s\n' "$value"
+}
+
+_config_list_item_normalize() {
+	local item=${1-}
+	item=$(_config_trim_spaces "$item")
+	if [[ "$item" == \"*\" ]]; then
+		item=${item#\"}
+		item=${item%\"}
+		item=${item//\\\"/\"}
+		item=${item//\\n/$'\n'}
+		item=${item//\\r/$'\r'}
+		item=${item//\\t/$'\t'}
+		item=${item//\\\\/\\}
+	fi
+	printf '%s\n' "$item"
+}
+
+config_get_list() {
+	local key=$1
+	local default=${2:-}
+	local raw normalized
+	raw=$(config_get "$key" "$default")
+	raw=$(_config_trim_spaces "$raw")
+	[[ -n "$raw" ]] || return 0
+
+	if [[ "$raw" == \[*\] ]]; then
+		raw=${raw#\[}
+		raw=${raw%\]}
+		while IFS= read -r normalized; do
+			normalized=$(_config_list_item_normalize "$normalized")
+			[[ -n "$normalized" ]] || continue
+			printf '%s\n' "$normalized"
+		done < <(printf '%s\n' "$raw" | tr ',' '\n')
+		return 0
+	fi
+
+	normalized=$(_config_list_item_normalize "$raw")
+	[[ -n "$normalized" ]] || return 0
+	printf '%s\n' "$normalized"
+}
+
+config_get_custom_runner_cmd() {
+	local nested root
+	nested=$(config_get "runners.custom.custom_runner_cmd" "")
+	if [[ -n "$nested" ]]; then
+		printf '%s\n' "$nested"
+		return 0
+	fi
+	root=$(config_get "custom_runner_cmd" "")
+	printf '%s\n' "$root"
+}
+
 is_truthy() {
 	local v=${1:-}
 	local vl
@@ -233,6 +294,21 @@ task_status() {
 	task_get "$task_id" "status" "pending"
 }
 
+task_clear_review_state() {
+	local task_id=$1
+	task_set "$task_id" "review_status" ""
+	task_set "$task_id" "review_reason" ""
+	task_set "$task_id" "review_required" ""
+	task_set "$task_id" "review_requested_at" ""
+	task_set "$task_id" "review_auto_triggered" ""
+	task_set "$task_id" "reviewed_at" ""
+	task_set "$task_id" "review_runner" ""
+	task_set "$task_id" "review_output_file" ""
+	task_set "$task_id" "merge_gate_status" ""
+	task_set "$task_id" "merge_gate_reason" ""
+	task_set "$task_id" "merge_required_verification_tier" ""
+}
+
 # Runtime lifecycle probe for a task.
 # Sets global variables for callers:
 # - TASK_RUNTIME_STATUS: persisted status value
@@ -269,7 +345,7 @@ task_runtime_refresh() {
 	fi
 
 	case "$TASK_RUNTIME_STATUS" in
-	done | merged | failed | conflict | needs_input)
+	done | merged | failed | conflict | needs_input | split)
 		if [[ "$TASK_RUNTIME_SESSION_PRESENT" == "true" ]]; then
 			TASK_RUNTIME_STALE_SESSION=true
 		fi
@@ -301,6 +377,16 @@ task_prepare_new_attempt() {
 	task_set "$task_id" "last_failure_reason" ""
 	task_set "$task_id" "agent_exit_code" ""
 	task_set "$task_id" "runner_metadata_missing" ""
+	task_set "$task_id" "verification_tier" ""
+	task_set "$task_id" "verification_reason" ""
+	task_set "$task_id" "failure_class" ""
+	task_set "$task_id" "failure_summary" ""
+	task_set "$task_id" "failure_streak" "0"
+	task_set "$task_id" "failure_check_file" ""
+	task_set "$task_id" "recovery_policy" ""
+	task_set "$task_id" "recovery_next_action" ""
+	task_set "$task_id" "recovery_policy_reason" ""
+	task_clear_review_state "$task_id"
 	task_clear_needs_input "$task_id"
 }
 
@@ -481,10 +567,21 @@ task_is_ready() {
 	status=$(task_status "$task_id")
 	[[ "$status" == "pending" ]] || return 1
 
+	if task_dependency_blocker "$task_id"; then
+		return 1
+	fi
+	return 0
+}
+
+task_dependency_blocker() {
+	local task_id=$1
+	TASK_DEPENDENCY_BLOCKER_ID=""
+	TASK_DEPENDENCY_BLOCKER_STATUS=""
+
 	local deps
 	deps=$(task_get "$task_id" "deps" "")
 	if [[ -z "$deps" ]]; then
-		return 0
+		return 1
 	fi
 
 	local dep dep_status
@@ -494,11 +591,13 @@ task_is_ready() {
 			[[ -z "$dep" ]] && continue
 			dep_status=$(task_status "$dep")
 			if [[ "$dep_status" != "merged" ]]; then
-				return 1
+				TASK_DEPENDENCY_BLOCKER_ID="$dep"
+				TASK_DEPENDENCY_BLOCKER_STATUS="$dep_status"
+				return 0
 			fi
 		done
 	done <<<"$deps"
-	return 0
+	return 1
 }
 
 # --- Logging ---
@@ -1531,9 +1630,9 @@ memory_update_progress() {
 		local title
 		title=$(task_get "$task_id" "title" "$task_id")
 		case "$status" in
-		merged)
+		merged | split)
 			merged=$((merged + 1))
-			merged_list+="- [x] ${task_id}: ${title}"$'\n'
+			merged_list+="- [x] ${task_id}: ${title} (${status})"$'\n'
 			;;
 		failed)
 			failed=$((failed + 1))
@@ -1598,9 +1697,9 @@ memory_update_progress_override() {
 		local title
 		title=$(task_get "$task_id" "title" "$task_id")
 		case "$status" in
-		merged)
+		merged | split)
 			merged=$((merged + 1))
-			merged_list+="- [x] ${task_id}: ${title}"$'\n'
+			merged_list+="- [x] ${task_id}: ${title} (${status})"$'\n'
 			;;
 		failed)
 			failed=$((failed + 1))
@@ -1670,8 +1769,8 @@ memory_update_active_context() {
 				next+="- ${task_id}: ${title} (waiting for deps)"$'\n'
 			fi
 			;;
-		merged)
-			recent+="- ${task_id}: ${title} (merged)"$'\n'
+		merged | split)
+			recent+="- ${task_id}: ${title} (${status})"$'\n'
 			;;
 		esac
 	done <<<"$(task_list_ids)"

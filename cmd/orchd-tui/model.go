@@ -1013,15 +1013,58 @@ func (m *model) refreshDetailViewport() {
 		checkLine = fmt.Sprintf("%d/%d passed", m.details.CheckPassed, m.details.CheckTotal)
 	}
 
+	runner := t.Runner
+	if strings.TrimSpace(runner) == "" {
+		runner = t.SelectedRunner
+	}
+
 	var b strings.Builder
 	if strings.TrimSpace(t.Title) != "" {
 		b.WriteString(t.Title)
 		b.WriteString("\n\n")
 	}
-	fmt.Fprintf(&b, "role: %s\nrunner: %s\nattempts: %d\nstatus: %s\nagent alive: %t\n\n", emptyDash(t.Role), emptyDash(t.Runner), t.Attempts, m.taskDisplayStatus(*t), t.AgentAlive)
+	fmt.Fprintf(&b, "role: %s\nrunner: %s\nattempts: %d\nstatus: %s\nagent alive: %t\n\n", emptyDash(t.Role), emptyDash(runner), t.Attempts, m.taskDisplayStatus(*t), t.AgentAlive)
 	fmt.Fprintf(&b, "branch: %s\nsession: %s\nsession state: %s\nstarted: %s\nchecked: %s\nmerged: %s\n\n", emptyDash(t.Branch), emptyDash(t.Session), emptyDash(t.SessionState), emptyDash(m.details.StartedAt), emptyDash(t.CheckedAt), emptyDash(t.MergedAt))
 	fmt.Fprintf(&b, "deps: %s\n\n", deps)
 	fmt.Fprintf(&b, "last check: %s\n\n", checkLine)
+
+	b.WriteString("Swarm\n")
+	fmt.Fprintf(&b, "routing role: %s\n", emptyDash(t.RoutingRole))
+	fmt.Fprintf(&b, "selected runner: %s\n", emptyDash(t.SelectedRunner))
+	fmt.Fprintf(&b, "routing fallback: %s (count=%d)\n", boolToYesNo(t.RoutingFallbackUsed), t.RoutingFallbackCount)
+	if strings.TrimSpace(t.RoutingReason) != "" {
+		fmt.Fprintf(&b, "routing reason: %s\n", t.RoutingReason)
+	}
+	fmt.Fprintf(&b, "verification tier: %s\n", emptyDash(t.VerificationTier))
+	if strings.TrimSpace(t.VerificationReason) != "" {
+		fmt.Fprintf(&b, "verification reason: %s\n", t.VerificationReason)
+	}
+	if strings.TrimSpace(t.FailureClass) != "" || strings.TrimSpace(t.RecoveryPolicy) != "" {
+		fmt.Fprintf(&b, "failure class: %s\n", emptyDash(t.FailureClass))
+		fmt.Fprintf(&b, "recovery policy: %s\n", emptyDash(t.RecoveryPolicy))
+		if strings.TrimSpace(t.RecoveryNextAction) != "" {
+			fmt.Fprintf(&b, "recovery next action: %s\n", t.RecoveryNextAction)
+		}
+	}
+	fmt.Fprintf(&b, "review required: %s\n", boolToYesNo(t.ReviewRequired))
+	if strings.TrimSpace(t.ReviewStatus) != "" || strings.TrimSpace(t.ReviewReason) != "" {
+		fmt.Fprintf(&b, "review status: %s\n", emptyDash(t.ReviewStatus))
+		if strings.TrimSpace(t.ReviewReason) != "" {
+			fmt.Fprintf(&b, "review reason: %s\n", t.ReviewReason)
+		}
+		fmt.Fprintf(&b, "review runner: %s\n", emptyDash(t.ReviewRunner))
+	}
+	if strings.TrimSpace(t.MergeGateStatus) != "" || strings.TrimSpace(t.MergeGateReason) != "" {
+		fmt.Fprintf(&b, "merge gate: %s\n", emptyDash(t.MergeGateStatus))
+		fmt.Fprintf(&b, "merge tier: %s\n", emptyDash(t.MergeRequiredVerificationTier))
+		if strings.TrimSpace(t.MergeGateReason) != "" {
+			fmt.Fprintf(&b, "merge reason: %s\n", t.MergeGateReason)
+		}
+	}
+	if strings.TrimSpace(t.SplitChildren) != "" {
+		fmt.Fprintf(&b, "split children: %s\n", t.SplitChildren)
+	}
+	b.WriteString("\n")
 
 	if t.NeedsInput != nil {
 		b.WriteString("Needs Input\n")
@@ -1189,10 +1232,11 @@ func (m *model) refreshStatsViewport() {
 	}
 
 	text := fmt.Sprintf(
-		"Overview\n\nTotal tasks:     %d\nMerged:          %d (%d%%)\nRunning:         %d\nPending:         %d\nDone:            %d\nFailed:          %d\nConflict:        %d\nNeeds input:     %d\n\nReady queue\n\nSpawnable:       %d\nCheckable:       %d\nMergeable:       %d\n\nRoles\n\n%s\n\nProject\n\nRoot:            %s\nBase branch:     %s\nRunner:          %s\nMax parallel:    %d\nAutopilot:       %s\n",
+		"Overview\n\nTotal tasks:     %d\nMerged:          %d (%d%%)\nSplit:           %d\nRunning:         %d\nPending:         %d\nDone:            %d\nFailed:          %d\nConflict:        %d\nNeeds input:     %d\n\nReady queue\n\nSpawnable:       %d\nCheckable:       %d\nMergeable:       %d\n\nSwarm\n\nLast decision:   %s\nDecision why:    %s\nFinisher state:  %s\nFinisher why:    %s\nOrch route:      %s -> %s\nIdle avoidance:  %s\n\nRoles\n\n%s\n\nProject\n\nRoot:            %s\nBase branch:     %s\nRunner:          %s\nMax parallel:    %d\nAutopilot:       %s\n",
 		total,
 		merged,
 		progress,
+		m.state.Counts.Split,
 		m.state.Counts.Running,
 		m.state.Counts.Pending,
 		m.state.Counts.Done,
@@ -1202,6 +1246,13 @@ func (m *model) refreshStatsViewport() {
 		m.state.Ready.Spawn,
 		m.state.Ready.Check,
 		m.state.Ready.Merge,
+		emptyDash(m.state.Scheduler.LastAction),
+		emptyDash(compactOutput(m.state.Scheduler.LastReason)),
+		emptyDash(m.state.Finisher.State),
+		emptyDash(compactOutput(m.state.Finisher.Reason)),
+		emptyDash(m.state.Orchestrator.RouteRole),
+		emptyDash(m.state.Orchestrator.SelectedRunner),
+		emptyDash(compactOutput(m.state.Orchestrator.LastReminderReason)),
 		strings.Join(roleLines, "\n"),
 		emptyDash(m.state.ProjectRoot),
 		emptyDash(m.state.BaseBranch),
@@ -1211,6 +1262,13 @@ func (m *model) refreshStatsViewport() {
 	)
 
 	m.statsViewport.SetContent(text)
+}
+
+func boolToYesNo(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
 }
 
 func (m *model) taskStatus(taskID string) string {

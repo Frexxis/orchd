@@ -11,7 +11,7 @@ cmd_doctor() {
 	require_project
 	cd "$start_dir" || true
 
-	local runner_config runner_effective base_branch worktree_dir max_parallel
+	local runner_config runner_effective planner_runner builder_runner reviewer_runner recovery_runner base_branch worktree_dir max_parallel
 	runner_config=$(config_get "worker.runner" "")
 	if [[ -z "$runner_config" ]]; then
 		runner_config=$(config_get "orchestrator.runner" "")
@@ -20,6 +20,10 @@ cmd_doctor() {
 		runner_config=$(config_get "runner" "")
 	fi
 	runner_effective=$(detect_runner)
+	planner_runner=$(swarm_select_runner_for_role "planner" "$runner_effective")
+	builder_runner=$(swarm_select_runner_for_role "builder" "$runner_effective")
+	reviewer_runner=$(swarm_select_runner_for_role "reviewer" "$runner_effective")
+	recovery_runner=$(swarm_select_runner_for_role "recovery" "$runner_effective")
 	base_branch=$(config_get "base_branch" "main")
 	worktree_dir=$(config_get "worktree_dir" ".worktrees")
 	max_parallel=$(config_get "max_parallel" "3")
@@ -34,6 +38,12 @@ cmd_doctor() {
 	ideate_cooldown=$(config_get_int "ideate.cooldown_seconds" "30")
 	ideate_max_cycles=$(config_get_int "ideate.max_cycles" "20")
 	ideate_max_failures=$(config_get_int "ideate.max_consecutive_failures" "3")
+
+	local finisher_state finisher_reason scheduler_action scheduler_reason
+	finisher_state=$(cat "$PROJECT_ROOT/.orchd/finish/state" 2>/dev/null || true)
+	finisher_reason=$(cat "$PROJECT_ROOT/.orchd/finish/reason" 2>/dev/null || true)
+	scheduler_action=$(cat "$PROJECT_ROOT/.orchd/scheduler/last_action" 2>/dev/null || true)
+	scheduler_reason=$(cat "$PROJECT_ROOT/.orchd/scheduler/last_reason" 2>/dev/null || true)
 
 	quality_detect_cmds "$PROJECT_ROOT"
 
@@ -55,11 +65,25 @@ cmd_doctor() {
 	printf 'worktree_dir:  %s\n' "$worktree_dir"
 	printf 'max_parallel:  %s\n' "$max_parallel"
 
+	printf '\nswarm routing:\n'
+	printf '  planner:  %s\n' "$planner_runner"
+	printf '  builder:  %s\n' "$builder_runner"
+	printf '  reviewer: %s\n' "$reviewer_runner"
+	printf '  recovery: %s\n' "$recovery_runner"
+	printf '  planner candidates:  %s\n' "$(swarm_role_candidates_csv "planner")"
+	printf '  builder candidates:  %s\n' "$(swarm_role_candidates_csv "builder")"
+	printf '  reviewer candidates: %s\n' "$(swarm_role_candidates_csv "reviewer")"
+	printf '  recovery candidates: %s\n' "$(swarm_role_candidates_csv "recovery")"
+
 	printf '\nideate:\n'
 	printf '  max_ideas:                 %s\n' "$ideate_max_ideas"
 	printf '  cooldown_seconds:          %s\n' "$ideate_cooldown"
 	printf '  max_cycles:                %s\n' "$ideate_max_cycles"
 	printf '  max_consecutive_failures:  %s\n' "$ideate_max_failures"
+	printf '  finisher state:            %s\n' "${finisher_state:-<none>}"
+	printf '  finisher reason:           %s\n' "${finisher_reason:-<none>}"
+	printf '  last scheduler action:     %s\n' "${scheduler_action:-<none>}"
+	printf '  last scheduler reason:     %s\n' "${scheduler_reason:-<none>}"
 
 	printf '\nquality (config):\n'
 	printf '  lint_cmd:  %s\n' "${lint_cmd:-<auto>}"

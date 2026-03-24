@@ -107,6 +107,7 @@ EOF
 					;;
 				done) done_count=$((done_count + 1)) ;;
 				merged) merged=$((merged + 1)) ;;
+				split) merged=$((merged + 1)) ;;
 				failed) failed=$((failed + 1)) ;;
 				conflict) conflict=$((conflict + 1)) ;;
 				needs_input) needs_input=$((needs_input + 1)) ;;
@@ -132,10 +133,10 @@ EOF
 			task_runtime_refresh "$target"
 			status="$TASK_RUNTIME_STATUS"
 			case "$status" in
-			pending | done | merged | failed | conflict | needs_input)
+			pending | done | merged | split | failed | conflict | needs_input)
 				_await_emit "$json" "status_${status}" "$target" \
 					"1" "0" "0" "$([[ "$status" == "done" ]] && echo 1 || echo 0)" \
-					"$([[ "$status" == "merged" ]] && echo 1 || echo 0)" \
+					"$([[ "$status" == "merged" || "$status" == "split" ]] && echo 1 || echo 0)" \
 					"$([[ "$status" == "failed" ]] && echo 1 || echo 0)" \
 					"$([[ "$status" == "conflict" ]] && echo 1 || echo 0)" \
 					"$([[ "$status" == "needs_input" ]] && echo 1 || echo 0)"

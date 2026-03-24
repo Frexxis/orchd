@@ -18,7 +18,7 @@ _board_print() {
 	local runner
 	runner=$(detect_runner)
 
-	local total=0 pending=0 running=0 done_count=0 merged=0 failed=0 needs_input=0
+	local total=0 pending=0 running=0 done_count=0 merged=0 split_count=0 failed=0 needs_input=0
 
 	printf '\033[1m'
 	printf '┌──────────────────────────────────────────────────────────────────────────────┐\n'
@@ -75,6 +75,12 @@ _board_print() {
 			status_color="\033[32m"
 			status_reset="\033[0m"
 			merged=$((merged + 1))
+			;;
+		split)
+			status_text="split"
+			status_color="\033[36m"
+			status_reset="\033[0m"
+			split_count=$((split_count + 1))
 			;;
 		failed)
 			status_text="fail"
@@ -140,8 +146,8 @@ _board_print() {
 
 	printf '│ %s %3d%%                                            │\n' "$bar" "$progress_pct"
 	local counts_line
-	counts_line=$(printf 'total:%d  pend:%d  run:%d  done:%d  mrg:%d  fail:%d  need:%d' \
-		"$total" "$pending" "$running" "$done_count" "$merged" "$failed" "$needs_input")
+	counts_line=$(printf 'total:%d  pend:%d  run:%d  done:%d  mrg:%d  split:%d  fail:%d  need:%d' \
+		"$total" "$pending" "$running" "$done_count" "$merged" "$split_count" "$failed" "$needs_input")
 	printf '│ %-76s │\n' "$counts_line"
 	printf '│ runner: %-12s                                                        │\n' "$runner"
 	printf '└──────────────────────────────────────────────────────────────────────────────┘\n'

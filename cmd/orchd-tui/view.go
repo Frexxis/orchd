@@ -387,7 +387,7 @@ func (m model) viewFooter() string {
 	bar := strings.Repeat("=", filled) + strings.Repeat("-", barW-filled)
 
 	countLine := fmt.Sprintf(
-		"[%s] %3d%%  total=%d pending=%d running=%d done=%d merged=%d failed=%d",
+		"[%s] %3d%%  total=%d pending=%d running=%d done=%d merged=%d split=%d failed=%d",
 		bar,
 		pct,
 		m.state.Counts.Total,
@@ -395,6 +395,7 @@ func (m model) viewFooter() string {
 		m.state.Counts.Running,
 		m.state.Counts.Done,
 		m.state.Counts.Merged,
+		m.state.Counts.Split,
 		m.state.Counts.Failed,
 	)
 

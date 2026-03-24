@@ -153,6 +153,18 @@ _fleet_list() {
 	done <<<"$projects"
 }
 
+_fleet_project_file() {
+	local proj_path=$1
+	local rel=$2
+	printf '%s/.orchd/%s\n' "$proj_path" "$rel"
+}
+
+_fleet_project_read() {
+	local proj_path=$1
+	local rel=$2
+	cat "$(_fleet_project_file "$proj_path" "$rel")" 2>/dev/null || true
+}
+
 _fleet_autopilot() {
 	_fleet_require_config
 
@@ -276,8 +288,8 @@ _fleet_status() {
 	projects=$(fleet_list_projects) || die "no projects configured"
 	[[ -n "$projects" ]] || die "no projects configured"
 
-	printf '%-20s %-12s %-14s %-8s %s\n' "PROJECT" "AUTOPILOT" "MODE" "TASKS" "DETAIL"
-	printf '%-20s %-12s %-14s %-8s %s\n' "---" "---" "---" "---" "---"
+	printf '%-20s %-12s %-14s %-8s %-18s %-12s %s\n' "PROJECT" "AUTOPILOT" "MODE" "TASKS" "FINISH" "NEXT" "DETAIL"
+	printf '%-20s %-12s %-14s %-8s %-18s %-12s %s\n' "---" "---" "---" "---" "---" "---" "---"
 
 	local proj_id proj_path
 	while IFS=$'\t' read -r proj_id proj_path; do
@@ -285,17 +297,22 @@ _fleet_status() {
 		proj_path=$(_fleet_trim_edges "$proj_path")
 		[[ -z "$proj_id" ]] && continue
 
-		local ap_status="--" mode="--" task_info="--" detail=""
+		local ap_status="--" mode="--" task_info="--" detail="" finish_state="--" next_action="--"
 
 		if [[ ! -d "$proj_path" ]]; then
 			ap_status="missing"
-			printf '%-20s %-12s %-14s %-8s %s\n' "$proj_id" "$ap_status" "$mode" "--" "directory not found"
+			printf '%-20s %-12s %-14s %-8s %-18s %-12s %s\n' "$proj_id" "$ap_status" "$mode" "--" "--" "--" "directory not found"
 			continue
 		fi
 
 		if [[ -f "$proj_path/.orchd.toml" ]]; then
 			mode=$(_fleet_project_autopilot_mode "$proj_path")
 		fi
+
+		finish_state=$(_fleet_project_read "$proj_path" "finish/state")
+		[[ -n "$finish_state" ]] || finish_state="--"
+		next_action=$(_fleet_project_read "$proj_path" "scheduler/last_action")
+		[[ -n "$next_action" ]] || next_action="--"
 
 		# Autopilot status
 		if [[ -f "$proj_path/.orchd/autopilot.pid" ]]; then
@@ -336,7 +353,7 @@ _fleet_status() {
 			fi
 		fi
 
-		printf '%-20s %-12s %-14s %-8s %s\n' "$proj_id" "$ap_status" "$mode" "$task_info" "$detail"
+		printf '%-20s %-12s %-14s %-8s %-18s %-12s %s\n' "$proj_id" "$ap_status" "$mode" "$task_info" "$finish_state" "$next_action" "$detail"
 	done <<<"$projects"
 }
 
@@ -391,8 +408,8 @@ _fleet_brief() {
 	cutoff_iso=$(date -u -d "$hours hours ago" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-"${hours}"H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "")
 
 	printf 'Fleet Brief (last %dh)\n\n' "$hours"
-	printf '%-20s %-8s %-8s %-8s %-12s %-14s %s\n' "PROJECT" "MERGED" "FAILED" "NEEDS" "STATUS" "MODE" "QUEUE"
-	printf '%-20s %-8s %-8s %-8s %-12s %-14s %s\n' "---" "---" "---" "---" "---" "---" "---"
+	printf '%-20s %-8s %-8s %-8s %-12s %-14s %-18s %-12s %s\n' "PROJECT" "MERGED" "FAILED" "NEEDS" "STATUS" "MODE" "FINISH" "NEXT" "QUEUE"
+	printf '%-20s %-8s %-8s %-8s %-12s %-14s %-18s %-12s %s\n' "---" "---" "---" "---" "---" "---" "---" "---" "---"
 
 	local proj_id proj_path
 	while IFS=$'\t' read -r proj_id proj_path; do
@@ -400,16 +417,20 @@ _fleet_brief() {
 		proj_path=$(_fleet_trim_edges "$proj_path")
 		[[ -z "$proj_id" ]] && continue
 
-		local merged=0 failed=0 needs=0 ap_status="idle" mode="--" queue_count=0
+		local merged=0 failed=0 needs=0 ap_status="idle" mode="--" queue_count=0 finish_state="--" next_action="--"
 
 		if [[ ! -d "$proj_path" ]]; then
-			printf '%-20s %-8s %-8s %-8s %-12s %-14s %s\n' "$proj_id" "--" "--" "--" "missing" "--" "--"
+			printf '%-20s %-8s %-8s %-8s %-12s %-14s %-18s %-12s %s\n' "$proj_id" "--" "--" "--" "missing" "--" "--" "--" "--"
 			continue
 		fi
 
 		if [[ -f "$proj_path/.orchd.toml" ]]; then
 			mode=$(_fleet_project_autopilot_mode "$proj_path")
 		fi
+		finish_state=$(_fleet_project_read "$proj_path" "finish/state")
+		[[ -n "$finish_state" ]] || finish_state="--"
+		next_action=$(_fleet_project_read "$proj_path" "scheduler/last_action")
+		[[ -n "$next_action" ]] || next_action="--"
 
 		# Parse orchd.log for recent events
 		local log_file="$proj_path/.orchd/orchd.log"
@@ -454,7 +475,7 @@ _fleet_brief() {
 			queue_count=$(awk '/^- \[ \]/ { c++ } END { print c+0 }' "$qf")
 		fi
 
-		printf '%-20s %-8d %-8d %-8d %-12s %-14s %d\n' "$proj_id" "$merged" "$failed" "$needs" "$ap_status" "$mode" "$queue_count"
+		printf '%-20s %-8d %-8d %-8d %-12s %-14s %-18s %-12s %d\n' "$proj_id" "$merged" "$failed" "$needs" "$ap_status" "$mode" "$finish_state" "$next_action" "$queue_count"
 	done <<<"$projects"
 
 	printf '\nconfig: %s\n' "$(fleet_config_file)"

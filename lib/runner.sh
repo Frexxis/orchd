@@ -189,7 +189,7 @@ _runner_cmd_custom() {
 	local log_file="$LOGS_DIR/${task_id}.log"
 	local exit_file="$LOGS_DIR/${task_id}.exit"
 	local custom_cmd
-	custom_cmd=$(config_get "custom_runner_cmd" "")
+	custom_cmd=$(config_get_custom_runner_cmd)
 
 	if [[ -z "$custom_cmd" ]]; then
 		die "custom runner requires 'custom_runner_cmd' in .orchd.toml"

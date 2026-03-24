@@ -34,6 +34,13 @@ Optional worker execution mode flags (set true only when needed):
 - NO_PLANNING: true|false (if true, worker should skip planning loops and execute concrete edits)
 - COMMIT_REQUIRED: true|false (if true, worker should produce at least one focused commit)
 
+Optional throughput and verification metadata (recommended for v2 planning):
+- SIZE: xs|small|medium|large|xl
+- RISK: low|medium|high|critical
+- BLAST_RADIUS: narrow|medium|wide
+- FILE_HINTS: comma-separated paths, areas, or subsystems likely affected
+- RECOMMENDED_VERIFICATION: smoke|targeted|full
+
 If you include these, keep them short and runnable from the repo root.
 
 Output ONLY in this exact format, one task per block, separated by blank lines:
@@ -52,6 +59,11 @@ BUILD_CMD: <build command or "none">
 EXECUTION_ONLY: <true|false>
 NO_PLANNING: <true|false>
 COMMIT_REQUIRED: <true|false>
+SIZE: <xs|small|medium|large|xl or "none">
+RISK: <low|medium|high|critical or "none">
+BLAST_RADIUS: <narrow|medium|wide or "none">
+FILE_HINTS: <comma-separated hints or "none">
+RECOMMENDED_VERIFICATION: <smoke|targeted|full or "none">
 
 Rules:
 - Order tasks so that independent ones come first

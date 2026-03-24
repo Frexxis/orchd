@@ -14,6 +14,7 @@ resolve_path() {
 }
 
 ORCHD="$(resolve_path "$(dirname "$0")/../bin/orchd")"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 PASS=0
 FAIL=0
 TOTAL=0
@@ -92,6 +93,47 @@ set_test_cmd() {
 	mv "$tmp" "$cfg"
 }
 
+set_config_value() {
+	local cfg=$1
+	local section=$2
+	local key=$3
+	local value=$4
+	python - "$cfg" "$section" "$key" "$value" <<'PY'
+from pathlib import Path
+import sys
+
+cfg_path = Path(sys.argv[1])
+section = sys.argv[2]
+key = sys.argv[3]
+value = sys.argv[4]
+lines = cfg_path.read_text().splitlines()
+out = []
+current = ""
+updated = False
+
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        current = stripped[1:-1].strip()
+        out.append(line)
+        continue
+    if current == section and stripped.startswith(f"{key} ") and "=" in stripped and not updated:
+        indent = line[: len(line) - len(line.lstrip())]
+        out.append(f"{indent}{key} = {value}")
+        updated = True
+        continue
+    out.append(line)
+
+if not updated:
+    if out and out[-1] != "":
+        out.append("")
+    out.append(f"[{section}]")
+    out.append(f"{key} = {value}")
+
+cfg_path.write_text("\n".join(out) + "\n")
+PY
+}
+
 assert_task_status() {
 	local desc=$1
 	local repo_dir=$2
@@ -145,6 +187,21 @@ cleanup() {
 	fi
 	if [[ -n "${LIFE_DIR:-}" && -d "$LIFE_DIR" ]]; then
 		rm -rf "$LIFE_DIR"
+	fi
+	if [[ -n "${CLAUDE_DIR:-}" && -d "$CLAUDE_DIR" ]]; then
+		rm -rf "$CLAUDE_DIR"
+	fi
+	if [[ -n "${CLAUDE_STICKY_DIR:-}" && -d "$CLAUDE_STICKY_DIR" ]]; then
+		rm -rf "$CLAUDE_STICKY_DIR"
+	fi
+	if [[ -n "${CLAUDE_AUTO_FALLBACK_DIR:-}" && -d "$CLAUDE_AUTO_FALLBACK_DIR" ]]; then
+		rm -rf "$CLAUDE_AUTO_FALLBACK_DIR"
+	fi
+	if [[ -n "${ROUTE_DIR:-}" && -d "$ROUTE_DIR" ]]; then
+		rm -rf "$ROUTE_DIR"
+	fi
+	if [[ -n "${ORCH_ROUTE_DIR:-}" && -d "$ORCH_ROUTE_DIR" ]]; then
+		rm -rf "$ORCH_ROUTE_DIR"
 	fi
 }
 
@@ -254,6 +311,93 @@ else
 	fail ".gitignore includes needs_input JSON artifact"
 fi
 
+if [[ -f "$INIT_DIR/.orchd.toml" ]] && grep -q '^\[swarm.policy\]' "$INIT_DIR/.orchd.toml"; then
+	pass "config includes swarm policy scaffold"
+else
+	fail "config includes swarm policy scaffold"
+fi
+
+if [[ -f "$INIT_DIR/.orchd.toml" ]] && grep -q '^# \[swarm.roles\]' "$INIT_DIR/.orchd.toml"; then
+	pass "config includes swarm role examples"
+else
+	fail "config includes swarm role examples"
+fi
+
+ROUTE_DIR=$(mktemp -d)
+git -C "$ROUTE_DIR" init -q
+git -C "$ROUTE_DIR" config user.name "orchd-test"
+git -C "$ROUTE_DIR" config user.email "test@orchd.dev"
+git -C "$ROUTE_DIR" commit --allow-empty -m "init" -q
+assert_exit_0 "init swarm route repo succeeds" "$ORCHD" init "$ROUTE_DIR"
+
+ROUTE_FAKE_CLAUDE="$ROUTE_DIR/fake-claude"
+ROUTE_FAKE_OPENCODE="$ROUTE_DIR/fake-opencode"
+ROUTE_MISSING_CODEX="$ROUTE_DIR/missing-codex"
+cat >"$ROUTE_FAKE_CLAUDE" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$ROUTE_FAKE_OPENCODE" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$ROUTE_FAKE_CLAUDE" "$ROUTE_FAKE_OPENCODE"
+set_config_value "$ROUTE_DIR/.orchd.toml" "swarm.roles" "planner" '["codex", "claude"]'
+set_config_value "$ROUTE_DIR/.orchd.toml" "swarm.roles" "builder" '["codex", "opencode"]'
+set_config_value "$ROUTE_DIR/.orchd.toml" "swarm.roles" "reviewer" '["claude"]'
+set_config_value "$ROUTE_DIR/.orchd.toml" "swarm.roles" "recovery" '["codex", "opencode"]'
+printf '\nclaude_bin = "%s"\nopencode_bin = "%s"\ncodex_bin = "%s"\n' "$ROUTE_FAKE_CLAUDE" "$ROUTE_FAKE_OPENCODE" "$ROUTE_MISSING_CODEX" >>"$ROUTE_DIR/.orchd.toml"
+
+assert_output_contains "doctor shows planner swarm route" 'planner:  claude' run_in_dir "$ROUTE_DIR" "$ORCHD" doctor
+assert_output_contains "doctor shows builder swarm route" 'builder:  opencode' run_in_dir "$ROUTE_DIR" "$ORCHD" doctor
+assert_output_contains "doctor shows recovery swarm route" 'recovery: opencode' run_in_dir "$ROUTE_DIR" "$ORCHD" doctor
+
+mkdir -p "$ROUTE_DIR/.orchd/tasks/route-pending"
+printf 'pending\n' >"$ROUTE_DIR/.orchd/tasks/route-pending/status"
+printf 'Route Pending\n' >"$ROUTE_DIR/.orchd/tasks/route-pending/title"
+ROUTE_STATE_JSON=$(run_in_dir "$ROUTE_DIR" "$ORCHD" state --json)
+if printf '%s' "$ROUTE_STATE_JSON" | grep -q '"swarm_routing":{"planner":{"selected_runner":"claude"' && printf '%s' "$ROUTE_STATE_JSON" | grep -q '"builder":{"selected_runner":"opencode"'; then
+	pass "state exposes top-level swarm routing metadata"
+else
+	fail "state exposes top-level swarm routing metadata"
+fi
+if printf '%s' "$ROUTE_STATE_JSON" | grep -q '"id":"route-pending"' && printf '%s' "$ROUTE_STATE_JSON" | grep -q '"routing_role":"builder"' && printf '%s' "$ROUTE_STATE_JSON" | grep -q '"selected_runner":"opencode"' && printf '%s' "$ROUTE_STATE_JSON" | grep -q '"routing_fallback_used":true'; then
+	pass "state exposes task-level routing metadata"
+else
+	fail "state exposes task-level routing metadata"
+fi
+
+ORCH_ROUTE_DIR=$(mktemp -d)
+git -C "$ORCH_ROUTE_DIR" init -q
+git -C "$ORCH_ROUTE_DIR" config user.name "orchd-test"
+git -C "$ORCH_ROUTE_DIR" config user.email "test@orchd.dev"
+git -C "$ORCH_ROUTE_DIR" commit --allow-empty -m "init" -q
+assert_exit_0 "init orchestrator route repo succeeds" "$ORCHD" init "$ORCH_ROUTE_DIR"
+ORCH_ROUTE_FAKE_CLAUDE="$ORCH_ROUTE_DIR/fake-orchestrator-claude.sh"
+ORCH_ROUTE_MISSING_CODEX="$ORCH_ROUTE_DIR/missing-codex"
+cat >"$ORCH_ROUTE_FAKE_CLAUDE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ORCHD_RESULT: NEEDS_INPUT\n'
+printf 'ORCHD_REASON: orchestrator route probe\n'
+EOF
+chmod +x "$ORCH_ROUTE_FAKE_CLAUDE"
+set_config_value "$ORCH_ROUTE_DIR/.orchd.toml" "worker" "runner" '"auto"'
+set_config_value "$ORCH_ROUTE_DIR/.orchd.toml" "orchestrator" "session_mode" '"reinvoke"'
+set_config_value "$ORCH_ROUTE_DIR/.orchd.toml" "orchestrator" "continue_delay" '0'
+set_config_value "$ORCH_ROUTE_DIR/.orchd.toml" "orchestrator" "max_iterations" '2'
+set_config_value "$ORCH_ROUTE_DIR/.orchd.toml" "swarm.roles" "planner" '["codex", "claude"]'
+printf '\nclaude_bin = "%s"\ncodex_bin = "%s"\n' "$ORCH_ROUTE_FAKE_CLAUDE" "$ORCH_ROUTE_MISSING_CODEX" >>"$ORCH_ROUTE_DIR/.orchd.toml"
+
+assert_exit_0 "orchestrate uses planner route fallback" run_in_dir "$ORCH_ROUTE_DIR" bash -lc '"$0" orchestrate 0 >/dev/null 2>&1; test "$?" -eq 2' "$ORCHD"
+if [[ "$(cat "$ORCH_ROUTE_DIR/.orchd/orchestrator/route_role" 2>/dev/null || true)" == "planner" ]] && [[ "$(cat "$ORCH_ROUTE_DIR/.orchd/orchestrator/selected_runner" 2>/dev/null || true)" == "claude" ]] && [[ "$(cat "$ORCH_ROUTE_DIR/.orchd/orchestrator/route_fallback_used" 2>/dev/null || true)" == "true" ]]; then
+	pass "orchestrate records planner route fallback metadata"
+else
+	fail "orchestrate records planner route fallback metadata"
+fi
+
+assert_exit_0 "autopilot ai mode inherits orchestrator route" run_in_dir "$ORCH_ROUTE_DIR" bash -lc '"$0" autopilot 0 >/dev/null 2>&1; test "$?" -eq 2' "$ORCHD"
+
 if [[ -f "$INIT_DIR/AGENTS.md" ]]; then
 	pass "AGENTS.md created"
 else
@@ -304,6 +448,11 @@ BUILD_CMD: none
 EXECUTION_ONLY: true
 NO_PLANNING: yes
 COMMIT_REQUIRED: 1
+SIZE: small
+RISK: high
+BLAST_RADIUS: wide
+FILE_HINTS: src/api,src/ui
+RECOMMENDED_VERIFICATION: full
 EOF'
 assert_exit_0 "plan --file succeeds" run_in_dir "$INIT_DIR" "$ORCHD" plan --file .orchd/plan_in.txt
 assert_output_contains "task test_cmd stored" "echo test" cat "$INIT_DIR/.orchd/tasks/t1/test_cmd"
@@ -311,6 +460,11 @@ assert_output_contains "task lint_cmd stored" "echo lint" cat "$INIT_DIR/.orchd/
 assert_output_contains "task execution_only stored" "true" cat "$INIT_DIR/.orchd/tasks/t1/execution_only"
 assert_output_contains "task no_planning stored" "true" cat "$INIT_DIR/.orchd/tasks/t1/no_planning"
 assert_output_contains "task commit_required stored" "true" cat "$INIT_DIR/.orchd/tasks/t1/commit_required"
+assert_output_contains "task size stored" "small" cat "$INIT_DIR/.orchd/tasks/t1/size"
+assert_output_contains "task risk stored" "high" cat "$INIT_DIR/.orchd/tasks/t1/risk"
+assert_output_contains "task blast radius stored" "wide" cat "$INIT_DIR/.orchd/tasks/t1/blast_radius"
+assert_output_contains "task file hints stored" "src/api,src/ui" cat "$INIT_DIR/.orchd/tasks/t1/file_hints"
+assert_output_contains "task verification recommendation stored" "full" cat "$INIT_DIR/.orchd/tasks/t1/recommended_verification"
 
 KICKOFF_MODE_PROMPT=$(
 	cd "$INIT_DIR" || exit 1
@@ -327,7 +481,7 @@ KICKOFF_MODE_PROMPT=$(
 	LOGS_DIR="$ORCHD_DIR/logs"
 	_build_kickoff_prompt "t1" "$INIT_DIR"
 )
-if printf '%s' "$KICKOFF_MODE_PROMPT" | grep -q 'execution_only: true' && printf '%s' "$KICKOFF_MODE_PROMPT" | grep -q 'NO_PLANNING is enabled'; then
+if printf '%s' "$KICKOFF_MODE_PROMPT" | grep -q 'execution_only: true' && printf '%s' "$KICKOFF_MODE_PROMPT" | grep -q 'NO_PLANNING is enabled' && printf '%s' "$KICKOFF_MODE_PROMPT" | grep -q 'risk: high' && printf '%s' "$KICKOFF_MODE_PROMPT" | grep -q 'recommended_verification: full'; then
 	pass "kickoff prompt includes strict execution mode directives"
 else
 	fail "kickoff prompt includes strict execution mode directives"
@@ -419,8 +573,11 @@ assert_output_contains "help shows check" "check" "$ORCHD" --help
 assert_output_contains "help shows merge" "merge" "$ORCHD" --help
 assert_output_contains "help shows resume" "resume" "$ORCHD" --help
 assert_output_contains "help shows autopilot" "autopilot" "$ORCHD" --help
+assert_output_contains "help shows finish" "finish" "$ORCHD" --help
 assert_output_contains "help shows doctor" "doctor" "$ORCHD" --help
 assert_output_contains "help shows refresh-docs" "refresh-docs" "$ORCHD" --help
+assert_exit_0 "finish help works" run_in_dir "$INIT_DIR" "$ORCHD" finish --help
+assert_exit_nonzero "finish status reports not running by default" run_in_dir "$INIT_DIR" "$ORCHD" finish --status
 
 printf '\n[11] Merge checks out base branch before merge\n'
 run_in_dir "$INIT_DIR" git checkout -q -b "agent-merge-base-safety"
@@ -454,7 +611,7 @@ mkdir -p "$INIT_DIR/.orchd/tasks/autopilot-merge"
 printf 'done\n' >"$INIT_DIR/.orchd/tasks/autopilot-merge/status"
 printf 'agent-autopilot-merge\n' >"$INIT_DIR/.orchd/tasks/autopilot-merge/branch"
 
-assert_exit_0 "autopilot merges done task" run_in_dir "$INIT_DIR" "$ORCHD" autopilot 0
+assert_exit_0 "autopilot merges done task" run_in_dir "$INIT_DIR" "$ORCHD" autopilot --deterministic 0
 assert_task_status "autopilot task marked as merged" "$INIT_DIR" "autopilot-merge" "merged"
 
 printf '\n[13] Merge --all stops after post-merge test failure\n'
@@ -482,6 +639,60 @@ printf 'agent-z-fail-stop\n' >"$INIT_DIR/.orchd/tasks/z-fail-stop/branch"
 assert_exit_nonzero "merge --all fails when post-merge tests fail" run_in_dir "$INIT_DIR" "$ORCHD" merge --all
 assert_task_status "first failing task marked failed" "$INIT_DIR" "a-fail-stop" "failed"
 assert_task_status "later task remains unmerged" "$INIT_DIR" "z-fail-stop" "done"
+
+printf '\n[13b] Task review persists review status\n'
+REVIEW_RUNNER_SCRIPT="$INIT_DIR/review-runner.sh"
+REVIEW_PROMPT_CAPTURE="$INIT_DIR/review-prompt-capture.txt"
+REVIEW_WORKTREE_CAPTURE="$INIT_DIR/review-worktree-capture.txt"
+REVIEW_TASK_ID_CAPTURE="$INIT_DIR/review-task-id-capture.txt"
+cat >"$REVIEW_RUNNER_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+worktree=$1
+task_id=$2
+prompt=$3
+printf '%s' "$prompt" > review-prompt-capture.txt
+printf '%s' "$worktree" > review-worktree-capture.txt
+printf '%s' "$task_id" > review-task-id-capture.txt
+if [[ -f "$worktree/review_untracked.txt" ]]; then
+	cat "$worktree/review_untracked.txt" > review-worktree-file-capture.txt
+else
+	printf 'missing\n' > review-worktree-file-capture.txt
+fi
+cat <<'OUT'
+REVIEW_STATUS: approved
+REVIEW_REASON: focused diff looks safe to merge
+No issues found.
+OUT
+EOF
+chmod +x "$REVIEW_RUNNER_SCRIPT"
+set_config_value "$INIT_DIR/.orchd.toml" "swarm.roles" "reviewer" '"custom"'
+set_config_value "$INIT_DIR/.orchd.toml" "runners.custom" "custom_runner_cmd" "\"$REVIEW_RUNNER_SCRIPT {worktree} {task_id} {prompt}\""
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+run_in_dir "$INIT_DIR" git checkout -q -b "agent-review-task"
+printf 'review me\n' >"$INIT_DIR/review_me.txt"
+run_in_dir "$INIT_DIR" git add review_me.txt
+run_in_dir "$INIT_DIR" git commit -q -m "test: add reviewable diff"
+run_in_dir "$INIT_DIR" git checkout -q "$BASE_BRANCH"
+mkdir -p "$INIT_DIR/.worktrees"
+run_in_dir "$INIT_DIR" git worktree add -q "$INIT_DIR/.worktrees/agent-review-task" "agent-review-task"
+printf 'staged review change\n' >>"$INIT_DIR/.worktrees/agent-review-task/review_me.txt"
+run_in_dir "$INIT_DIR/.worktrees/agent-review-task" git add review_me.txt
+printf 'unstaged review change\n' >>"$INIT_DIR/.worktrees/agent-review-task/review_me.txt"
+printf 'brand new review file\n' >"$INIT_DIR/.worktrees/agent-review-task/review_untracked.txt"
+mkdir -p "$INIT_DIR/.orchd/tasks/review-task"
+printf 'done\n' >"$INIT_DIR/.orchd/tasks/review-task/status"
+printf 'agent-review-task\n' >"$INIT_DIR/.orchd/tasks/review-task/branch"
+printf '%s\n' "$INIT_DIR/.worktrees/agent-review-task" >"$INIT_DIR/.orchd/tasks/review-task/worktree"
+assert_exit_0 "review --task persists review status" run_in_dir "$INIT_DIR" "$ORCHD" review --task review-task
+assert_output_contains "review task stores approved status" "approved" cat "$INIT_DIR/.orchd/tasks/review-task/review_status"
+assert_output_contains "review task stores review reason" "focused diff looks safe to merge" cat "$INIT_DIR/.orchd/tasks/review-task/review_reason"
+assert_output_contains "review task prompt includes staged worktree changes" "staged review change" cat "$REVIEW_PROMPT_CAPTURE"
+assert_output_contains "review task prompt includes unstaged worktree changes" "unstaged review change" cat "$REVIEW_PROMPT_CAPTURE"
+assert_output_contains "review task prompt includes untracked worktree files" "brand new review file" cat "$REVIEW_PROMPT_CAPTURE"
+assert_output_contains "review task passes task worktree to custom runner" "$INIT_DIR/.worktrees/agent-review-task" cat "$REVIEW_WORKTREE_CAPTURE"
+assert_output_contains "review task passes task id to custom runner" "review-task" cat "$REVIEW_TASK_ID_CAPTURE"
+assert_output_contains "review task custom runner can inspect task worktree files" "brand new review file" cat "$INIT_DIR/review-worktree-file-capture.txt"
 
 # Restore test_cmd to empty so remaining tests aren't affected by false.
 set_test_cmd "$INIT_DIR/.orchd.toml" ""
@@ -796,6 +1007,29 @@ tmux new -d -s "orchd-agent-resume-stale" "sleep 120"
 assert_exit_0 "resume cleans stale session and relaunches" run_in_dir "$LIFE_DIR" "$ORCHD" resume "resume-stale" "stale session retry"
 assert_task_status "resume leaves task running" "$LIFE_DIR" "resume-stale" "running"
 
+# resume should honor configured recovery routing even when the task stores its original runner.
+RECOVERY_RUNNER_SCRIPT="$LIFE_DIR/recovery-runner.sh"
+cat >"$RECOVERY_RUNNER_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'custom recovery\n' >> .orchd_resume_runner.log
+EOF
+chmod +x "$RECOVERY_RUNNER_SCRIPT"
+set_config_value "$LIFE_DIR/.orchd.toml" "swarm.roles" "recovery" '"custom"'
+set_config_value "$LIFE_DIR/.orchd.toml" "runners.custom" "custom_runner_cmd" "\"$RECOVERY_RUNNER_SCRIPT\""
+run_in_dir "$LIFE_DIR" git worktree add -q -b "agent-resume-recovery-route" "$LIFE_DIR/.worktrees/agent-resume-recovery-route" "$LIFE_BASE_BRANCH"
+mkdir -p "$LIFE_DIR/.orchd/tasks/resume-recovery-route"
+printf 'failed\n' >"$LIFE_DIR/.orchd/tasks/resume-recovery-route/status"
+printf '%s\n' "$LIFE_DIR/.worktrees/agent-resume-recovery-route" >"$LIFE_DIR/.orchd/tasks/resume-recovery-route/worktree"
+printf 'codex\n' >"$LIFE_DIR/.orchd/tasks/resume-recovery-route/runner"
+assert_exit_0 "resume applies configured recovery runner over stored runner" run_in_dir "$LIFE_DIR" "$ORCHD" resume "resume-recovery-route" "route to recovery runner"
+sleep 1
+if [[ "$(cat "$LIFE_DIR/.orchd/tasks/resume-recovery-route/runner" 2>/dev/null || true)" == "custom" ]] && [[ -f "$LIFE_DIR/.worktrees/agent-resume-recovery-route/.orchd_resume_runner.log" ]]; then
+	pass "resume routes existing task through configured recovery runner"
+else
+	fail "resume routes existing task through configured recovery runner"
+fi
+
 # check should not fail solely due missing ORCHD_EXIT marker when other gates pass.
 run_in_dir "$LIFE_DIR" git checkout -q "$LIFE_BASE_BRANCH"
 run_in_dir "$LIFE_DIR" git checkout -q -b "agent-check-missing-exit"
@@ -820,6 +1054,61 @@ printf 'agent-check-missing-exit\n' >"$LIFE_DIR/.orchd/tasks/check-missing-exit/
 printf '%s\n' "$LIFE_DIR/.worktrees/agent-check-missing-exit" >"$LIFE_DIR/.orchd/tasks/check-missing-exit/worktree"
 assert_exit_0 "check passes with missing exit marker when quality gates pass" run_in_dir "$LIFE_DIR" "$ORCHD" check "check-missing-exit"
 assert_task_status "check marks task done when exit marker missing" "$LIFE_DIR" "check-missing-exit" "done"
+
+# check should adapt verification depth to task risk metadata.
+for tier_name in low medium high; do
+	run_in_dir "$LIFE_DIR" git checkout -q "$LIFE_BASE_BRANCH"
+	run_in_dir "$LIFE_DIR" git checkout -q -b "agent-check-tier-${tier_name}"
+	printf 'check-tier-%s\n' "$tier_name" >"$LIFE_DIR/check_tier_${tier_name}.txt"
+	run_in_dir "$LIFE_DIR" git add "check_tier_${tier_name}.txt"
+	run_in_dir "$LIFE_DIR" git commit -q -m "test: check tier ${tier_name}"
+	run_in_dir "$LIFE_DIR" git checkout -q "$LIFE_BASE_BRANCH"
+	run_in_dir "$LIFE_DIR" git worktree add -q "$LIFE_DIR/.worktrees/agent-check-tier-${tier_name}" "agent-check-tier-${tier_name}"
+	cat >"$LIFE_DIR/.worktrees/agent-check-tier-${tier_name}/TASK_REPORT.md" <<'EOF'
+Summary
+
+EVIDENCE:
+- CMD: true
+  RESULT: PASS
+  OUTPUT: ok
+
+Rollback: revert commit if regression appears.
+EOF
+	mkdir -p "$LIFE_DIR/.orchd/tasks/check-tier-${tier_name}"
+	printf 'failed\n' >"$LIFE_DIR/.orchd/tasks/check-tier-${tier_name}/status"
+	printf 'agent-check-tier-%s\n' "$tier_name" >"$LIFE_DIR/.orchd/tasks/check-tier-${tier_name}/branch"
+	printf '%s\n' "$LIFE_DIR/.worktrees/agent-check-tier-${tier_name}" >"$LIFE_DIR/.orchd/tasks/check-tier-${tier_name}/worktree"
+	printf 'printf "lint\\n" >> .orchd_trace.log\n' >"$LIFE_DIR/.orchd/tasks/check-tier-${tier_name}/lint_cmd"
+	printf 'printf "test\\n" >> .orchd_trace.log\n' >"$LIFE_DIR/.orchd/tasks/check-tier-${tier_name}/test_cmd"
+	printf 'printf "build\\n" >> .orchd_trace.log\n' >"$LIFE_DIR/.orchd/tasks/check-tier-${tier_name}/build_cmd"
+	printf '%s\n' "$tier_name" >"$LIFE_DIR/.orchd/tasks/check-tier-${tier_name}/risk"
+done
+
+assert_exit_0 "low-risk check uses smoke verification" run_in_dir "$LIFE_DIR" "$ORCHD" check "check-tier-low"
+assert_exit_0 "medium-risk check uses targeted verification" run_in_dir "$LIFE_DIR" "$ORCHD" check "check-tier-medium"
+assert_exit_0 "high-risk check uses full verification" run_in_dir "$LIFE_DIR" "$ORCHD" check "check-tier-high"
+
+assert_output_contains "low-risk task stores smoke tier" "smoke" cat "$LIFE_DIR/.orchd/tasks/check-tier-low/verification_tier"
+assert_output_contains "medium-risk task stores targeted tier" "targeted" cat "$LIFE_DIR/.orchd/tasks/check-tier-medium/verification_tier"
+assert_output_contains "high-risk task stores full tier" "full" cat "$LIFE_DIR/.orchd/tasks/check-tier-high/verification_tier"
+
+if [[ "$(paste -sd ',' "$LIFE_DIR/.worktrees/agent-check-tier-low/.orchd_trace.log" 2>/dev/null || true)" == "lint" ]]; then
+	pass "low-risk task runs smoke verification subset"
+else
+	fail "low-risk task runs smoke verification subset"
+fi
+
+if [[ "$(paste -sd ',' "$LIFE_DIR/.worktrees/agent-check-tier-medium/.orchd_trace.log" 2>/dev/null || true)" == "lint,test" ]]; then
+	pass "medium-risk task runs targeted verification subset"
+else
+	fail "medium-risk task runs targeted verification subset"
+fi
+
+if [[ "$(paste -sd ',' "$LIFE_DIR/.worktrees/agent-check-tier-high/.orchd_trace.log" 2>/dev/null || true)" == "lint,test,build" ]]; then
+	pass "high-risk task runs full verification suite"
+else
+	fail "high-risk task runs full verification suite"
+fi
 
 # check should parse structured needs_input payloads.
 run_in_dir "$LIFE_DIR" git checkout -q "$LIFE_BASE_BRANCH"
@@ -849,6 +1138,19 @@ if printf '%s' "$STATE_NEEDS_JSON" | grep -q '"source":"json"' && printf '%s' "$
 	pass "state exposes structured needs_input payload"
 else
 	fail "state exposes structured needs_input payload"
+fi
+
+mkdir -p "$LIFE_DIR/.orchd/tasks/state-json-hardening"
+printf 'pending\n' >"$LIFE_DIR/.orchd/tasks/state-json-hardening/status"
+printf 'maybe\n' >"$LIFE_DIR/.orchd/tasks/state-json-hardening/routing_fallback_used"
+printf 'abc\n' >"$LIFE_DIR/.orchd/tasks/state-json-hardening/failure_streak"
+printf 'oops\n' >"$LIFE_DIR/.orchd/tasks/state-json-hardening/routing_fallback_count"
+STATE_JSON_HARDENING=$(run_in_dir "$LIFE_DIR" "$ORCHD" state --json)
+STATE_JSON_HARDENING_RESULT=$(python -c 'import json, sys; data = json.load(sys.stdin); task = next(t for t in data["tasks"] if t["id"] == "state-json-hardening"); print("{}|{}|{}".format(str(task["routing_fallback_used"]).lower(), task["failure_streak"], task["routing_fallback_count"]))' <<<"$STATE_JSON_HARDENING")
+if [[ "$STATE_JSON_HARDENING_RESULT" == "false|0|0" ]]; then
+	pass "state json sanitizes malformed boolean and numeric task metadata"
+else
+	fail "state json sanitizes malformed boolean and numeric task metadata"
 fi
 
 printf '\n[19] Help includes new commands\n'
@@ -982,7 +1284,7 @@ printf 'IDEA: Add release telemetry dashboards\n'
 printf 'REASON: Improves post-launch observability after the original scope ships.\n'
 EOF
 chmod +x "$IDEATE_FOLLOW_ON_RUNNER"
-printf '\ncustom_runner_cmd = "%s {worktree}"\n' "$IDEATE_FOLLOW_ON_RUNNER" >>"$INIT_DIR/.orchd.toml"
+set_config_value "$INIT_DIR/.orchd.toml" "runners.custom" "custom_runner_cmd" "\"$IDEATE_FOLLOW_ON_RUNNER {worktree}\""
 run_in_dir "$INIT_DIR" "$ORCHD" idea clear --force >/dev/null 2>&1 || true
 
 assert_exit_0 "ideate retries with follow-on pass after PROJECT_COMPLETE" run_in_dir "$INIT_DIR" "$ORCHD" ideate --runner custom
@@ -992,6 +1294,194 @@ if [[ $(cat "$INIT_DIR/.orchd/ideate_follow_on_counter" 2>/dev/null || printf '0
 	pass "ideate follow-on runner is invoked twice"
 else
 	fail "ideate follow-on runner is invoked twice"
+fi
+
+assert_output_contains "ideate records next-phase finisher state" "next_phase_available" cat "$INIT_DIR/.orchd/finish/state"
+
+printf '\n[20b] Swarm rollout docs\n'
+assert_output_contains "README documents swarm_mode rollout" "swarm_mode" cat "$REPO_ROOT/README.md"
+assert_output_contains "README documents auto_review policy" "auto_review" cat "$REPO_ROOT/README.md"
+assert_output_contains "ORCHESTRATOR docs mention finish" "orchd finish" cat "$REPO_ROOT/ORCHESTRATOR.md"
+assert_output_contains "runbook documents observe rollout" "observe" cat "$REPO_ROOT/orchestrator-runbook.md"
+
+printf '\n[21] Claude resume-session orchestrator\n'
+CLAUDE_DIR=$(mktemp -d)
+git -C "$CLAUDE_DIR" init -q
+git -C "$CLAUDE_DIR" config user.name "orchd-test"
+git -C "$CLAUDE_DIR" config user.email "test@orchd.dev"
+git -C "$CLAUDE_DIR" commit --allow-empty -m "init" -q
+assert_exit_0 "init claude lifecycle repo succeeds" "$ORCHD" init "$CLAUDE_DIR"
+set_config_value "$CLAUDE_DIR/.orchd.toml" "orchestrator" "runner" '"claude"'
+set_config_value "$CLAUDE_DIR/.orchd.toml" "orchestrator" "session_mode" '"resume"'
+set_config_value "$CLAUDE_DIR/.orchd.toml" "orchestrator" "continue_delay" '0'
+set_config_value "$CLAUDE_DIR/.orchd.toml" "orchestrator" "max_iterations" '4'
+set_config_value "$CLAUDE_DIR/.orchd.toml" "orchestrator" "max_stagnation" '10'
+
+CLAUDE_FAKE_BIN="$CLAUDE_DIR/fake-claude.sh"
+cat >"$CLAUDE_FAKE_BIN" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+workdir=$(pwd)
+count_file="$workdir/.orchd/fake_claude_count"
+log_file="$workdir/.orchd/fake_claude_invocations.log"
+count=$(cat "$count_file" 2>/dev/null || printf '0')
+count=$((count + 1))
+printf '%s\n' "$count" >"$count_file"
+printf 'CALL %s ::' "$count" >>"$log_file"
+for arg in "$@"; do
+	printf ' [%s]' "$arg" >>"$log_file"
+done
+printf '\n' >>"$log_file"
+if [[ "$count" == "1" ]]; then
+	printf 'ORCHD_RESULT: CONTINUE\n'
+	printf 'ORCHD_REASON: first turn complete\n'
+	exit 0
+fi
+printf 'ORCHD_RESULT: NEEDS_INPUT\n'
+printf 'ORCHD_REASON: stop after resume verification\n'
+EOF
+chmod +x "$CLAUDE_FAKE_BIN"
+printf '\nclaude_bin = "%s"\n' "$CLAUDE_FAKE_BIN" >>"$CLAUDE_DIR/.orchd.toml"
+
+assert_exit_0 "orchestrate reuses Claude session across turns" run_in_dir "$CLAUDE_DIR" bash -lc '"$0" orchestrate 0 >/dev/null 2>&1; test "$?" -eq 2' "$ORCHD"
+
+if grep -q -- '--session-id' "$CLAUDE_DIR/.orchd/fake_claude_invocations.log" && grep -q -- ' -r ' <(tr '[]' ' ' <"$CLAUDE_DIR/.orchd/fake_claude_invocations.log"); then
+	pass "claude orchestrator starts then resumes managed session"
+else
+	fail "claude orchestrator starts then resumes managed session"
+fi
+
+CLAUDE_RESUME_SID=$(cat "$CLAUDE_DIR/.orchd/orchestrator/resume_session_id" 2>/dev/null || true)
+CLAUDE_LOG_SIDS=$(
+	python - "$CLAUDE_DIR/.orchd/fake_claude_invocations.log" <<'PY'
+from pathlib import Path
+import re
+import sys
+text = Path(sys.argv[1]).read_text()
+session_ids = re.findall(r'--session-id\] \[([^\]]+)\]|-r\] \[([^\]]+)\]', text)
+flat = [a or b for a, b in session_ids]
+print("\n".join(flat))
+PY
+)
+if [[ -n "$CLAUDE_RESUME_SID" ]] && [[ $(printf '%s\n' "$CLAUDE_LOG_SIDS" | sort -u | wc -l | tr -d ' ') == "1" ]] && [[ "$CLAUDE_RESUME_SID" == "$(printf '%s\n' "$CLAUDE_LOG_SIDS" | head -n 1)" ]]; then
+	pass "claude orchestrator persists one session id across iterations"
+else
+	fail "claude orchestrator persists one session id across iterations"
+fi
+
+if grep -q '<system-reminder>' "$CLAUDE_DIR/.orchd/orchestrator/iterations/0002.prompt.txt"; then
+	pass "claude resumed prompt includes system reminder block"
+else
+	fail "claude resumed prompt includes system reminder block"
+fi
+
+printf '\n[22] Claude auto-fallback orchestrator\n'
+CLAUDE_AUTO_FALLBACK_DIR=$(mktemp -d)
+git -C "$CLAUDE_AUTO_FALLBACK_DIR" init -q
+git -C "$CLAUDE_AUTO_FALLBACK_DIR" config user.name "orchd-test"
+git -C "$CLAUDE_AUTO_FALLBACK_DIR" config user.email "test@orchd.dev"
+git -C "$CLAUDE_AUTO_FALLBACK_DIR" commit --allow-empty -m "init" -q
+assert_exit_0 "init claude auto-fallback repo succeeds" "$ORCHD" init "$CLAUDE_AUTO_FALLBACK_DIR"
+set_config_value "$CLAUDE_AUTO_FALLBACK_DIR/.orchd.toml" "orchestrator" "runner" '"claude"'
+set_config_value "$CLAUDE_AUTO_FALLBACK_DIR/.orchd.toml" "orchestrator" "session_mode" '"auto"'
+set_config_value "$CLAUDE_AUTO_FALLBACK_DIR/.orchd.toml" "orchestrator" "continue_delay" '0'
+set_config_value "$CLAUDE_AUTO_FALLBACK_DIR/.orchd.toml" "orchestrator" "max_iterations" '2'
+set_config_value "$CLAUDE_AUTO_FALLBACK_DIR/.orchd.toml" "orchestrator" "max_stagnation" '4'
+
+CLAUDE_AUTO_FALLBACK_BIN="$CLAUDE_AUTO_FALLBACK_DIR/fake-claude-auto.sh"
+cat >"$CLAUDE_AUTO_FALLBACK_BIN" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+workdir=$(pwd)
+log_file="$workdir/.orchd/fake_claude_auto.log"
+printf 'CALL ::' >>"$log_file"
+for arg in "$@"; do
+	printf ' [%s]' "$arg" >>"$log_file"
+done
+printf '\n' >>"$log_file"
+if [[ "${1:-}" == "-p" ]]; then
+	printf 'ORCHD_RESULT: NEEDS_INPUT\n'
+	printf 'ORCHD_REASON: managed fallback reached\n'
+	exit 0
+fi
+printf 'Authentication required\n'
+exit 1
+EOF
+chmod +x "$CLAUDE_AUTO_FALLBACK_BIN"
+printf '\nclaude_bin = "%s"\n' "$CLAUDE_AUTO_FALLBACK_BIN" >>"$CLAUDE_AUTO_FALLBACK_DIR/.orchd.toml"
+
+assert_exit_0 "claude auto mode falls back when sticky startup fails" run_in_dir "$CLAUDE_AUTO_FALLBACK_DIR" bash -lc '"$0" orchestrate 0 >/dev/null 2>&1; test "$?" -eq 2' "$ORCHD"
+if grep -q -- '--session-id' "$CLAUDE_AUTO_FALLBACK_DIR/.orchd/fake_claude_auto.log"; then
+	pass "claude auto fallback reaches managed resume path after sticky failure"
+else
+	fail "claude auto fallback reaches managed resume path after sticky failure"
+fi
+
+printf '\n[23] Claude sticky-session orchestrator\n'
+CLAUDE_STICKY_DIR=$(mktemp -d)
+git -C "$CLAUDE_STICKY_DIR" init -q
+git -C "$CLAUDE_STICKY_DIR" config user.name "orchd-test"
+git -C "$CLAUDE_STICKY_DIR" config user.email "test@orchd.dev"
+git -C "$CLAUDE_STICKY_DIR" commit --allow-empty -m "init" -q
+assert_exit_0 "init claude sticky repo succeeds" "$ORCHD" init "$CLAUDE_STICKY_DIR"
+set_config_value "$CLAUDE_STICKY_DIR/.orchd.toml" "orchestrator" "runner" '"claude"'
+set_config_value "$CLAUDE_STICKY_DIR/.orchd.toml" "orchestrator" "session_mode" '"sticky"'
+set_config_value "$CLAUDE_STICKY_DIR/.orchd.toml" "orchestrator" "continue_delay" '0'
+set_config_value "$CLAUDE_STICKY_DIR/.orchd.toml" "orchestrator" "idle_timeout" '1'
+set_config_value "$CLAUDE_STICKY_DIR/.orchd.toml" "orchestrator" "reminder_cooldown" '0'
+set_config_value "$CLAUDE_STICKY_DIR/.orchd.toml" "orchestrator" "max_iterations" '4'
+set_config_value "$CLAUDE_STICKY_DIR/.orchd.toml" "orchestrator" "max_stagnation" '20'
+
+CLAUDE_STICKY_FAKE_BIN="$CLAUDE_STICKY_DIR/fake-claude-sticky.sh"
+cat >"$CLAUDE_STICKY_FAKE_BIN" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+workdir=$(pwd)
+log_file="$workdir/.orchd/fake_claude_sticky.log"
+printf 'Accessing workspace:\n\n%s\n\n' "$workdir"
+printf '❯ 1. Yes, I trust this folder\n'
+printf '  2. No, exit\n'
+read -r _trust || exit 1
+printf '▐▛███▜▌   Claude Code vTEST\n'
+printf 'Welcome to Claude\n'
+printf '? for shortcuts\n'
+count=0
+while true; do
+  buffer=""
+  if ! IFS= read -r line; then
+    exit 0
+  fi
+  buffer+="$line"
+  while IFS= read -r -t 0.2 line; do
+    buffer+=$'\n'$line
+  done
+  [[ -n "${buffer//[[:space:]]/}" ]] || continue
+  count=$((count + 1))
+  printf 'PROMPT %s\n%s\n---\n' "$count" "$buffer" >>"$log_file"
+  if [[ "$count" == "1" ]]; then
+    printf 'ORCHD_RESULT: CONTINUE\n'
+    printf 'ORCHD_REASON: waiting for reminder\n'
+  else
+    printf 'ORCHD_RESULT: NEEDS_INPUT\n'
+    printf 'ORCHD_REASON: sticky reminder observed\n'
+  fi
+done
+EOF
+chmod +x "$CLAUDE_STICKY_FAKE_BIN"
+printf '\nclaude_bin = "%s"\n' "$CLAUDE_STICKY_FAKE_BIN" >>"$CLAUDE_STICKY_DIR/.orchd.toml"
+
+assert_exit_0 "claude sticky orchestrator wakes idle session" run_in_dir "$CLAUDE_STICKY_DIR" bash -lc '"$0" orchestrate 1 >/dev/null 2>&1; test "$?" -eq 2' "$ORCHD"
+
+if grep -q 'PROMPT 2' "$CLAUDE_STICKY_DIR/.orchd/fake_claude_sticky.log"; then
+	pass "claude sticky session receives reminder turn"
+else
+	fail "claude sticky session receives reminder turn"
+fi
+
+if grep -q '<system-reminder>' "$CLAUDE_STICKY_DIR/.orchd/fake_claude_sticky.log"; then
+	pass "claude sticky reminder includes system reminder block"
+else
+	fail "claude sticky reminder includes system reminder block"
 fi
 
 # --- Summary ---

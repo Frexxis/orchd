@@ -14,6 +14,7 @@ Operational rules for task-executing agents.
 ## Quality Expectations
 
 - Run the most relevant lint/test/build commands available.
+- Treat verification as risk-proportional: cheap checks first, broader validation when the task is high risk or wide blast radius.
 - If a command cannot run, explain why in TASK_REPORT.md.
 - Keep commits focused with clear messages.
 - Add tests for new functionality when possible.
@@ -46,6 +47,11 @@ A task is `done` only when ALL of these are true:
 4. No out-of-scope changes.
 5. TASK_REPORT.md is complete with evidence + rollback note.
 6. Commits are clean and focused.
+
+Notes:
+
+- `orchd check` may choose `smoke`, `targeted`, or `full` verification for the task.
+- Risky tasks may receive a reviewer pass before merge; leave clean evidence so review can succeed without human translation.
 
 ## Blocker Protocol
 

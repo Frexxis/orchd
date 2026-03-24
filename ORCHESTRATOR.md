@@ -44,7 +44,8 @@ Use these to understand current state, remaining work, constraints, and acceptan
 - `orchd plan --file <path>` / `orchd plan --stdin`: import externally-produced task DAG.
 - `orchd orchestrate [poll]`: run the supervised AI orchestrator loop.
 - `orchestrator.session_mode = attached`: for `opencode`, adopt an existing opencode chat session in the same project and send reminders into that same conversation.
-- `orchestrator.session_mode = sticky`: for `opencode` or `codex`, inject reminders into a managed live session when interactive mode is available.
+- `orchestrator.session_mode = sticky`: for `opencode`, `codex`, or `claude`, inject reminders into a managed live session when interactive mode is available.
+- `orchestrator.session_mode = resume`: for `claude`, continue the same managed Claude conversation across orchestrator turns.
 - `orchestrator.stop_policy = needs_input_only`: keep nudging the orchestrator even after apparent completion; only stop on a real blocker or explicit user stop.
 - `orchd orchestrate --once`: run one orchestrator turn without the supervisor loop.
 - `orchd orchestrate --daemon [poll]`: keep the orchestrator alive in background.
@@ -64,6 +65,8 @@ If present, `orchd check` will use them for that task (override > global config 
 - `orchd autopilot --continuous [poll]`: compatibility flag (implicit in AI mode; meaningful in deterministic mode).
 - `orchd autopilot --daemon [poll]`: run autonomously in background (recommended for long runs).
 - `orchd autopilot --status|--stop|--logs`: manage the daemon.
+- `orchd finish`: deterministic finisher loop for project completion, follow-on ideation, and aggressive recovery.
+- `orchd finish --daemon|--status|--stop|--logs`: manage the finisher daemon.
 - `orchd ideate`: generate the next backlog from `docs/memory/` + codebase context.
 
 ## Continuous Autonomous Mode
@@ -96,6 +99,15 @@ For fully autonomous project development:
 - Keep workers scoped: one clear goal per task with concrete acceptance criteria.
 - Use `state --json` as source of truth for "what next".
 - If a task needs user input, keep progress moving on other unblocked tasks.
+- Watch `state --json` for scheduler, finisher, and review-gate telemetry; use it to explain why orchd is merging, waiting, splitting, or asking for review.
+
+## Swarm Rollout
+
+- `swarm_mode = "off"`: keep legacy expectations and validate runners/config.
+- `swarm_mode = "observe"`: watch routing and telemetry first.
+- `swarm_mode = "on"`: rely on adaptive verification, reviewer automation, recovery, and finisher behavior.
+
+Even without an explicit rollout key, you can adopt v2 incrementally by using `orchd finish`, `orchd state --json`, and role-based runner config while keeping `worker.runner` compatibility.
 
 ## Deliverable Expectations
 

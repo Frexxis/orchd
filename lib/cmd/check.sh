@@ -233,6 +233,7 @@ PY
 	if $needs_input; then
 		task_mark_needs_input "$task_id" "$needs_input_source" "$needs_input_summary" "$needs_input_code" "$needs_input_question" "$needs_input_blocking" "$needs_input_options" "$needs_input_file"
 		task_set "$task_id" "needs_input_error" "$needs_input_error"
+		recovery_task_update_state "$task_id" "needs_input" "$check_file"
 		if $session_alive; then
 			runner_stop "$task_id"
 			agent_alive=false
@@ -396,11 +397,37 @@ PY
 		fi
 	fi
 
+	local verification_tier verification_reason
+	verify_select_commands "$task_id" "$lint_cmd" "$test_cmd" "$build_cmd" >/dev/null
+	verification_tier="$VERIFY_SELECTED_TIER"
+	verification_reason=$(verify_tier_reason)
+	task_set "$task_id" "verification_tier" "$verification_tier"
+	task_set "$task_id" "verification_reason" "$verification_reason"
+	_check_printf '  [INFO] verification tier: %s (%s)\n' "$verification_tier" "$verification_reason"
+
+	local selected_lint_cmd selected_test_cmd selected_build_cmd
+	selected_lint_cmd="$VERIFY_SELECTED_LINT_CMD"
+	selected_test_cmd="$VERIFY_SELECTED_TEST_CMD"
+	selected_build_cmd="$VERIFY_SELECTED_BUILD_CMD"
+
+	if [[ -n "$lint_cmd" && -z "$selected_lint_cmd" ]]; then
+		_check_printf '  [SKIP] lint skipped by verification tier (%s)\n' "$verification_tier"
+		skipped=$((skipped + 1))
+	fi
+	if [[ -n "$test_cmd" && -z "$selected_test_cmd" ]]; then
+		_check_printf '  [SKIP] tests skipped by verification tier (%s)\n' "$verification_tier"
+		skipped=$((skipped + 1))
+	fi
+	if [[ -n "$build_cmd" && -z "$selected_build_cmd" ]]; then
+		_check_printf '  [SKIP] build skipped by verification tier (%s)\n' "$verification_tier"
+		skipped=$((skipped + 1))
+	fi
+
 	# 6. Run lint command if configured
-	if [[ -n "$lint_cmd" ]]; then
+	if [[ -n "$selected_lint_cmd" ]]; then
 		total=$((total + 1))
-		_check_printf '  [RUN]  lint: %s\n' "$lint_cmd"
-		if _quality_exec "lint" "$lint_cmd"; then
+		_check_printf '  [RUN]  lint: %s\n' "$selected_lint_cmd"
+		if _quality_exec "lint" "$selected_lint_cmd"; then
 			_check_printf '  [PASS] lint passed\n'
 			passed=$((passed + 1))
 		else
@@ -413,12 +440,12 @@ PY
 	fi
 
 	# 7. Run test command if configured
-	if [[ -n "$test_cmd" ]]; then
+	if [[ -n "$selected_test_cmd" ]]; then
 		total=$((total + 1))
-		_check_printf '  [RUN]  test: %s\n' "$test_cmd"
-		if ! _validate_test_cmd_paths "$test_cmd"; then
+		_check_printf '  [RUN]  test: %s\n' "$selected_test_cmd"
+		if ! _validate_test_cmd_paths "$selected_test_cmd"; then
 			failed=$((failed + 1))
-		elif _quality_exec "test" "$test_cmd"; then
+		elif _quality_exec "test" "$selected_test_cmd"; then
 			_check_printf '  [PASS] tests passed\n'
 			passed=$((passed + 1))
 		else
@@ -431,10 +458,10 @@ PY
 	fi
 
 	# 8. Run build command if configured
-	if [[ -n "$build_cmd" ]]; then
+	if [[ -n "$selected_build_cmd" ]]; then
 		total=$((total + 1))
-		_check_printf '  [RUN]  build: %s\n' "$build_cmd"
-		if _quality_exec "build" "$build_cmd"; then
+		_check_printf '  [RUN]  build: %s\n' "$selected_build_cmd"
+		if _quality_exec "build" "$selected_build_cmd"; then
 			_check_printf '  [PASS] build passed\n'
 			passed=$((passed + 1))
 		else
@@ -466,9 +493,9 @@ PY
 
 	if ((failed == 0)) && ! $agent_alive; then
 		task_set "$task_id" "status" "done"
-		task_set "$task_id" "last_failure_reason" ""
 		task_set "$task_id" "needs_input_at" ""
 		task_clear_needs_input "$task_id"
+		recovery_clear_task_state "$task_id"
 		_check_printf '\n  task marked as DONE (ready for merge)\n'
 		log_event "INFO" "quality gate passed: $task_id ($passed/$total)"
 		if $agent_exit_unknown; then
@@ -478,12 +505,15 @@ PY
 		if $agent_alive; then
 			_check_printf '\n  agent still running — check again later\n'
 		else
+			local failure_class
+			failure_class=$(recovery_classify_failure "$task_id" "$check_file")
+			recovery_task_update_state "$task_id" "$failure_class" "$check_file"
 			task_set "$task_id" "status" "failed"
-			task_set "$task_id" "last_failure_reason" "quality_gate"
 			task_set "$task_id" "needs_input_at" ""
 			task_clear_needs_input "$task_id"
-			_check_printf '\n  task marked as FAILED (quality gate failed)\n'
-			log_event "WARN" "quality gate failed: $task_id ($passed/$total, $failed failed)"
+			_check_printf '\n  task marked as FAILED (%s -> %s)\n' "$RECOVERY_FAILURE_CLASS" "$RECOVERY_NEXT_ACTION"
+			_check_printf '  [INFO] recovery policy: %s (%s)\n' "$RECOVERY_POLICY" "$RECOVERY_POLICY_REASON"
+			log_event "WARN" "quality gate failed: $task_id class=$RECOVERY_FAILURE_CLASS policy=$RECOVERY_POLICY ($passed/$total, $failed failed)"
 		fi
 	fi
 }

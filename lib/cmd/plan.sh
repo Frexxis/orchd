@@ -3,28 +3,43 @@
 # Uses AI to generate a task DAG from a project description
 
 cmd_plan() {
-	# Modes:
-	#   orchd plan "<description>"     (generate via AI)
-	#   orchd plan --runner <runner> "<description>"
-	#   orchd plan --file <path>       (load an existing plan output)
-	#   orchd plan --stdin             (read plan output from stdin)
 	local runner_override=""
-	if [[ "${1:-}" == "--runner" ]]; then
-		runner_override="${2:-}"
-		[[ -n "$runner_override" ]] || die "usage: orchd plan --runner <runner> \"<project description>\""
-		shift 2
-	fi
+	local append_mode=false
+	local id_prefix=""
+	while [[ $# -gt 0 ]]; do
+		case "${1:-}" in
+		--runner)
+			runner_override="${2:-}"
+			[[ -n "$runner_override" ]] || die "usage: orchd plan --runner <runner> \"<project description>\""
+			shift 2
+			;;
+		--append)
+			append_mode=true
+			shift
+			;;
+		--prefix)
+			id_prefix="${2:-}"
+			[[ -n "$id_prefix" ]] || die "usage: orchd plan --prefix <task-id-prefix>"
+			shift 2
+			;;
+		*)
+			break
+			;;
+		esac
+	done
 
 	local mode="${1:-}"
 	if [[ "$mode" == "-h" || "$mode" == "--help" ]]; then
 		cat <<'EOF'
 usage:
-  orchd plan [--runner <runner>] "<project description>"
-  orchd plan --file <path>
-  orchd plan --stdin
+  orchd plan [--runner <runner>] [--append] [--prefix <id-prefix>] "<project description>"
+  orchd plan [--append] [--prefix <id-prefix>] --file <path>
+  orchd plan [--append] [--prefix <id-prefix>] --stdin
 
 notes:
   - --runner overrides the configured/auto-detected runner for planning only
+  - --append preserves existing tasks and adds the new plan on top
+  - --prefix rewrites appended TASK ids safely (recommended with --append)
   - plan output must follow the TASK/TITLE/ROLE/DEPS/DESCRIPTION/ACCEPTANCE format
   - optional per-task overrides: LINT_CMD, TEST_CMD, BUILD_CMD
   - optional execution mode flags: EXECUTION_ONLY, NO_PLANNING, COMMIT_REQUIRED
@@ -37,13 +52,13 @@ EOF
 		require_project
 		[[ -f "$plan_file" ]] || die "plan file not found: $plan_file"
 		cp "$plan_file" "$ORCHD_DIR/plan_output.txt"
-		_parse_plan_output "$ORCHD_DIR/plan_output.txt" || die "plan parsed 0 tasks from file: $plan_file"
+		_parse_plan_output "$ORCHD_DIR/plan_output.txt" "$append_mode" "$id_prefix" || die "plan parsed 0 tasks from file: $plan_file"
 		return 0
 	fi
 	if [[ "$mode" == "--stdin" ]]; then
 		require_project
 		cat >"$ORCHD_DIR/plan_output.txt"
-		_parse_plan_output "$ORCHD_DIR/plan_output.txt" || die "plan parsed 0 tasks from stdin"
+		_parse_plan_output "$ORCHD_DIR/plan_output.txt" "$append_mode" "$id_prefix" || die "plan parsed 0 tasks from stdin"
 		return 0
 	fi
 
@@ -56,7 +71,7 @@ EOF
 	if [[ -n "$runner_override" ]]; then
 		runner="$runner_override"
 	else
-		runner=$(detect_runner)
+		runner=$(swarm_select_runner_for_role "planner" "$(detect_runner)")
 	fi
 	runner_validate "$runner"
 
@@ -187,7 +202,7 @@ EOF
 		;;
 	custom)
 		local custom_cmd
-		custom_cmd=$(config_get "custom_runner_cmd" "")
+		custom_cmd=$(config_get_custom_runner_cmd)
 		if [[ -z "$custom_cmd" ]]; then
 			die "custom runner requires 'custom_runner_cmd' in .orchd.toml"
 		fi
@@ -217,7 +232,7 @@ EOF
 	fi
 
 	# Parse the plan output into task state files
-	_parse_plan_output "$plan_output" || die "plan parsed 0 tasks. Check $plan_output and templates/plan.prompt"
+	_parse_plan_output "$plan_output" "$append_mode" "$id_prefix" || die "plan parsed 0 tasks. Check $plan_output and templates/plan.prompt"
 }
 
 # --- Extract text content from JSONL (codex output) ---
@@ -321,14 +336,17 @@ PY
 # A new keyword line or EOF flushes the accumulated multi-line value.
 _parse_plan_output() {
 	local plan_file=$1
+	local append_mode=${2:-false}
+	local id_prefix=${3:-}
 	local current_id=""
 	local current_field=""
 	local current_value=""
 	local count=0
+	local parsed_ids=""
 	ORCHD_PLAN_TASK_COUNT=0
+	ORCHD_PLAN_TASK_IDS=""
 
-	# Clear existing tasks
-	if [[ -d "$TASKS_DIR" ]] && [[ -n "$(ls -A "$TASKS_DIR" 2>/dev/null)" ]]; then
+	if [[ "$append_mode" != "true" ]] && [[ -d "$TASKS_DIR" ]] && [[ -n "$(ls -A "$TASKS_DIR" 2>/dev/null)" ]]; then
 		printf 'warning: clearing existing task plan\n'
 		rm -rf "${TASKS_DIR:?}"/*
 	fi
@@ -349,6 +367,11 @@ _parse_plan_output() {
 		EXECUTION_ONLY:*) keyword="EXECUTION_ONLY" ;;
 		NO_PLANNING:*) keyword="NO_PLANNING" ;;
 		COMMIT_REQUIRED:*) keyword="COMMIT_REQUIRED" ;;
+		SIZE:*) keyword="SIZE" ;;
+		RISK:*) keyword="RISK" ;;
+		BLAST_RADIUS:*) keyword="BLAST_RADIUS" ;;
+		FILE_HINTS:*) keyword="FILE_HINTS" ;;
+		RECOMMENDED_VERIFICATION:*) keyword="RECOMMENDED_VERIFICATION" ;;
 		esac
 
 		if [[ -n "$keyword" ]]; then
@@ -365,13 +388,29 @@ _parse_plan_output() {
 			case "$keyword" in
 			TASK)
 				current_id=$(printf '%s' "$val" | tr -d '[:space:]')
+				if [[ "$append_mode" == "true" && -n "$id_prefix" ]]; then
+					current_id="${id_prefix}${current_id}"
+				fi
 				if [[ -n "$current_id" ]]; then
+					if [[ "$append_mode" == "true" ]] && task_exists "$current_id"; then
+						printf 'error: appended task id already exists: %s\n' "$current_id" >&2
+						return 1
+					fi
 					mkdir -p "$TASKS_DIR/$current_id"
 					task_set "$current_id" "status" "pending"
 					task_set "$current_id" "execution_only" "false"
 					task_set "$current_id" "no_planning" "false"
 					task_set "$current_id" "commit_required" "false"
+					task_set "$current_id" "size" ""
+					task_set "$current_id" "risk" ""
+					task_set "$current_id" "blast_radius" ""
+					task_set "$current_id" "file_hints" ""
+					task_set "$current_id" "recommended_verification" ""
 					count=$((count + 1))
+					if [[ -n "$parsed_ids" ]]; then
+						parsed_ids+=","
+					fi
+					parsed_ids+="$current_id"
 				fi
 				;;
 			TITLE)
@@ -383,6 +422,22 @@ _parse_plan_output() {
 			DEPS)
 				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
 					val=""
+				elif [[ "$append_mode" == "true" && -n "$id_prefix" ]]; then
+					local dep mapped_val="" dep_item
+					while IFS=',' read -r -a dep_arr; do
+						for dep_item in "${dep_arr[@]}"; do
+							dep=$(printf '%s' "$dep_item" | tr -d '[:space:]')
+							[[ -n "$dep" ]] || continue
+							if ! task_exists "$dep"; then
+								dep="${id_prefix}${dep}"
+							fi
+							if [[ -n "$mapped_val" ]]; then
+								mapped_val+=","
+							fi
+							mapped_val+="$dep"
+						done
+					done <<<"$val"
+					val="$mapped_val"
 				fi
 				[[ -n "$current_id" ]] && task_set "$current_id" "deps" "$val"
 				;;
@@ -421,6 +476,36 @@ _parse_plan_output() {
 			COMMIT_REQUIRED)
 				[[ -n "$current_id" ]] && task_set "$current_id" "commit_required" "$(_plan_bool "$val")"
 				;;
+			SIZE)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "size" "$val"
+				;;
+			RISK)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "risk" "$val"
+				;;
+			BLAST_RADIUS)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "blast_radius" "$val"
+				;;
+			FILE_HINTS)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "file_hints" "$val"
+				;;
+			RECOMMENDED_VERIFICATION)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "recommended_verification" "$val"
+				;;
 			esac
 		else
 			# Non-keyword line: append to active multi-line field (preserve blank lines)
@@ -451,6 +536,7 @@ _parse_plan_output() {
 	fi
 
 	export ORCHD_PLAN_TASK_COUNT="$count"
+	export ORCHD_PLAN_TASK_IDS="$parsed_ids"
 
 	printf '\nparsed %d tasks:\n\n' "$count"
 	_print_task_table

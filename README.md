@@ -245,7 +245,7 @@ supervisor_poll = 30       # orchd orchestrate poll interval
 continue_delay = 1         # delay before forced continuation reinvoke
 max_iterations = 0         # 0 = unlimited orchestrator supervisor iterations
 max_stagnation = 8         # stop after this many unchanged orchestrator turns
-session_mode = "auto"      # auto/attached/sticky/reinvoke
+session_mode = "auto"      # auto/attached/sticky/resume/reinvoke
 idle_timeout = 45          # sticky mode: idle seconds before reminder injection
 reminder_cooldown = 20     # sticky mode: minimum seconds between reminders
 max_reminders = 0          # 0 = unlimited reminders before fallback/stop
@@ -255,6 +255,32 @@ fallback_on_inject_failure = true # sticky mode: fallback to re-invoke loop on i
 
 [worker]
 runner = "claude"          # or: codex, opencode, aider, custom
+
+[swarm.policy]
+optimize_for = "balanced"  # speed | balanced | quality | cost
+allow_fallback = true
+verification_policy = "adaptive" # adaptive | strict
+auto_review = true          # automatically run reviewer role when risky merge policy can be unblocked by review
+
+# rollout note:
+# swarm_mode = "off"       # legacy behavior
+# swarm_mode = "observe"   # routing + telemetry visibility, lighter enforcement
+# swarm_mode = "on"        # full swarm v2 policy behavior
+
+# [swarm.roles]
+# planner = ["claude", "codex", "opencode"]
+# builder = ["codex", "claude", "opencode"]
+# reviewer = ["claude", "codex"]
+# recovery = ["claude", "opencode"]
+
+# [swarm.capabilities.claude]
+# tags = ["long_context", "strong_review", "spec_reasoning", "interactive_resume"]
+
+# [swarm.capabilities.codex]
+# tags = ["fast_patch", "tool_heavy"]
+
+# [swarm.capabilities.opencode]
+# tags = ["cheap_execution", "fast_patch"]
 
 [quality]
 lint_cmd = "npm run lint"  # run during orchd check
@@ -289,16 +315,30 @@ max_consecutive_failures = 3       # stop if ideate fails this many times in a r
 | `orchestrator.continue_delay` | 1 | Delay (seconds) before forced continuation reinvoke |
 | `orchestrator.max_iterations` | 0 | Max supervisor iterations (0 = unlimited) |
 | `orchestrator.max_stagnation` | 8 | Stop after this many unchanged orchestrator turns |
-| `orchestrator.session_mode` | auto | `auto`/`attached`/`sticky`/`reinvoke`; `attached` adopts an existing opencode session, `sticky` opens a managed live session |
+| `orchestrator.session_mode` | auto | `auto`/`attached`/`sticky`/`resume`/`reinvoke`; `attached` adopts an existing opencode session, `sticky` opens a managed live session (`opencode`/`codex`/`claude`), `resume` keeps the same Claude conversation across turns |
 | `orchestrator.idle_timeout` | 45 | Sticky mode idle threshold before injecting reminder |
 | `orchestrator.reminder_cooldown` | 20 | Sticky mode minimum seconds between reminders |
 | `orchestrator.max_reminders` | 0 | Sticky/attached mode max reminder injections before fallback; `0` means unlimited |
 | `orchestrator.sticky_startup_timeout` | 30 | Sticky mode wait time for interactive runner readiness |
 | `orchestrator.stop_policy` | needs_input_only | `needs_input_only` keeps reminding until a real blocker; attached mode no longer stops just because work looks complete |
 | `orchestrator.fallback_on_inject_failure` | true | If sticky injection fails, fallback to classic reinvoke loop |
+| `swarm.policy.optimize_for` | balanced | Swarm routing preference: `speed`, `balanced`, `quality`, or `cost` |
+| `swarm.policy.allow_fallback` | true | Allow role routing to fall back to the next available configured runner |
+| `swarm.policy.verification_policy` | adaptive | Planned v2 verification strategy scaffold; current safe default is `adaptive` |
+| `swarm.policy.auto_review` | true | Automatically invoke the reviewer role when risky merge policy can be satisfied by review approval |
 | `autopilot_poll` | 30 | Poll interval (seconds) in autopilot loop |
 | `autopilot_max_iterations` | 0 | Max autopilot iterations (0 = unlimited) |
 | `autopilot_retry_limit` | 2 | Max retries per failed task |
+
+Adaptive verification currently uses three tiers during `orchd check`:
+
+- `smoke`: cheapest viable confidence check, typically one fast command
+- `targeted`: focused default for medium-risk tasks, typically lint + test
+- `full`: broad validation for high-risk tasks, typically lint + test + build
+
+If a task sets `recommended_verification`, that override wins. Otherwise `risk` guides the tier selection.
+
+High-risk or wide-blast-radius tasks can also trigger an automatic reviewer pass during merge if targeted verification already exists and review approval is sufficient to satisfy the merge gate.
 | `autopilot_retry_backoff` | 60 | Base backoff (seconds) between retries |
 | `await_poll` | 5 | Poll interval for `orchd await` |
 | `await_timeout` | 0 | Timeout for `orchd await` (0 = no limit) |
@@ -336,7 +376,8 @@ orchd/
 │   ├── plan.prompt                # Prompt template for task planning
 │   ├── kickoff.prompt             # Prompt template for agent kickoff
 │   ├── continue.prompt            # Prompt template for task continuation
-│   ├── review.prompt              # Prompt template for review-only tasks
+│   ├── review.prompt              # Legacy review prompt path
+│   ├── reviewer.prompt            # Prompt template for reviewer-role tasks
 │   ├── ideate.prompt              # Prompt template for ideation
 │   └── orchestrator.prompt        # Prompt template for supervised AI orchestrator turns
 ├── AGENTS.md                      # Shared agent rules + role routing
@@ -376,7 +417,9 @@ Core principles, roles, agent CLI standards, prompt contracts, launch sequences,
 
 7. **`orchd orchestrate`** runs an AI orchestrator under supervisor control. If the orchestrator stops before the project reaches a terminal state, orchd automatically rebuilds context, injects a system reminder, and reinvokes it. If workers are running, the supervisor handles `orchd await --all` and resumes the orchestrator when state changes.
 
-8. **`orchd autopilot`** defaults to the supervised AI orchestrator engine (same behavior as `orchd orchestrate`), so if the orchestrator stops early, orchd reinvokes it with a system reminder until terminal state. With `opencode` and `session_mode=auto|attached`, orchd first tries to adopt the existing opencode session and send the reminder into that same conversation. Use `orchd autopilot --deterministic` for the legacy deterministic spawn/check/merge loop.
+8. **`orchd autopilot`** defaults to the supervised AI orchestrator engine (same behavior as `orchd orchestrate`), so if the orchestrator stops early, orchd reinvokes it with a system reminder until terminal state. With `opencode` and `session_mode=auto|attached`, orchd first tries to adopt the existing opencode session and send the reminder into that same conversation. With `claude`, `session_mode=auto` now prefers a managed sticky live session for idle wake-ups and falls back to managed `resume` continuation if sticky startup fails. Use `orchd autopilot --deterministic` for the legacy deterministic spawn/check/merge loop.
+
+9. **`orchd finish`** runs the deterministic finisher profile: adaptive verification, aggressive recovery, automatic reviewer escalation for risky merge overrides, split-aware replanning, and follow-on ideation until `PROJECT_COMPLETE` or a real blocker state.
 
 ## Memory Bank
 
@@ -451,9 +494,26 @@ path = "/home/user/projects/documentation"
 - `orchd fleet autopilot [poll_seconds]` — starts a background autopilot daemon for each valid orchd project using that project's autopilot mode (default: AI-supervised). Supports `--ai-orchestrated`, `--deterministic`, and `--continuous`.
 - `orchd fleet status` — shows a table with autopilot state, selected mode (ai/deterministic), task progress (merged/total), and running/failed counts per project.
 - `orchd fleet stop` — sends SIGTERM to all running fleet daemons.
-- `orchd fleet brief [hours]` — summarizes recent activity across all projects by parsing `orchd.log` and reading task state. Defaults to last 24 hours. Shows merged/failed/needs_input counts, autopilot status, and pending queue depth per project.
+- `orchd fleet brief [hours]` — summarizes recent activity across all projects by parsing `orchd.log` and reading task state. Defaults to last 24 hours. Shows merged/failed/needs_input counts, finisher state, last scheduler action, autopilot status, and pending queue depth per project.
 
 Fleet mode combined with the idea queue enables fully autonomous multi-project operation: queue ideas for each project, run `orchd fleet autopilot`, and let orchd work through everything.
+
+## Swarm v2 Rollout
+
+Recommended migration path:
+
+- `swarm_mode = "off"` — keep legacy expectations while you validate runners, worktrees, and quality commands
+- `swarm_mode = "observe"` — turn on routing and telemetry visibility first; watch scheduler decisions, finisher state, and recovery metadata in `orchd state --json`, fleet status, and the TUI
+- `swarm_mode = "on"` — rely on adaptive verification, recovery policies, split replanning, reviewer automation, and `orchd finish`
+
+Practical note: current repos can adopt v2 incrementally even without a dedicated `swarm_mode` key because the kernel remains backward-compatible with `worker.runner`, `orchd autopilot --deterministic`, and manual `spawn/check/merge` workflows.
+
+The most useful v2 telemetry fields now surface in `orchd state --json`:
+
+- top-level `scheduler` decisions and reasons
+- top-level `finisher` project-completion state
+- top-level `orchestrator` route/reminder metadata
+- per-task routing, verification, recovery, review, merge-gate, and split metadata
 
 ## Requirements
 
@@ -464,7 +524,10 @@ Fleet mode combined with the idea queue enables fully autonomous multi-project o
 ## Testing
 
 ```bash
-./tests/smoke.sh              # Run smoke test suite
+./tests/config_get.sh         # Config + routing regression tests
+./tests/smoke.sh              # CLI and lifecycle smoke tests
+./tests/swarm_smoke.sh        # Swarm/recovery/merge-policy regressions
+go test ./...                 # TUI + Go packages
 shellcheck bin/orchd lib/*.sh lib/cmd/*.sh tests/smoke.sh
 ```
 

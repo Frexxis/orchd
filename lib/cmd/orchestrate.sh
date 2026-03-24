@@ -22,8 +22,9 @@ notes:
   - runs an AI orchestrator under supervisor control
   - automatically reinvokes the orchestrator with a system reminder until terminal state
   - waiting on workers is handled by the supervisor, not by the orchestrator agent itself
-  - with opencode/codex and session_mode=sticky, reminders are injected into the same live session
+  - with opencode/codex/claude and session_mode=sticky, reminders are injected into the same live session
   - with opencode and session_mode=auto/attached, orchd can adopt an existing opencode session and send reminders into that session
+  - with claude and session_mode=auto/resume, orchd resumes the same Claude conversation across orchestrator turns
 EOF
 			return 0
 			;;
@@ -105,8 +106,13 @@ EOF
 	reminder_cooldown=$(config_get_int "orchestrator.reminder_cooldown" "20")
 	max_reminders=$(config_get_int "orchestrator.max_reminders" "8")
 	fallback_on_inject_failure=$(config_get "orchestrator.fallback_on_inject_failure" "true")
+	ORCHD_ORCH_SESSION_STRATEGY="classic"
 
 	rm -f "$(_orchestrate_stop_file)" 2>/dev/null || true
+	if _orchestrate_use_claude_resume_session "$runner" "$session_mode" "$once"; then
+		ORCHD_ORCH_SESSION_STRATEGY="claude-resume"
+		printf 'resume\n' >"$(_orchestrate_session_mode_file)"
+	fi
 	if _orchestrate_use_attached_opencode_session "$runner" "$session_mode" "$once"; then
 		_orchestrate_loop_attached_opencode "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$idle_timeout" "$reminder_cooldown" "$max_reminders" "$fallback_on_inject_failure"
 		local attached_rc=$?
@@ -116,8 +122,12 @@ EOF
 		log_event "INFO" "attached opencode session unavailable; falling back to sticky/reinvoke mode"
 	fi
 	if _orchestrate_use_sticky_session "$runner" "$session_mode" "$once"; then
-		_orchestrate_loop_sticky "$runner" "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$idle_timeout" "$reminder_cooldown" "$max_reminders" "$fallback_on_inject_failure"
-		local sticky_rc=$?
+		local sticky_rc=0
+		if _orchestrate_loop_sticky "$runner" "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$idle_timeout" "$reminder_cooldown" "$max_reminders" "$fallback_on_inject_failure"; then
+			sticky_rc=0
+		else
+			sticky_rc=$?
+		fi
 		if ((sticky_rc == 93)); then
 			log_event "WARN" "sticky orchestrator loop requested fallback to classic supervisor loop"
 			_orchestrate_loop "$runner" "$poll_interval" "$continue_delay" "$max_iterations" "$max_stagnation" "$once"
@@ -132,15 +142,60 @@ _orchestrate_detect_runner() {
 	local configured
 	configured=$(config_get "orchestrator.runner" "")
 	if [[ -n "$configured" ]] && [[ "$configured" != "auto" ]]; then
+		ORCHD_ORCH_ROUTE_ROLE="orchestrator"
+		ORCHD_ORCH_ROUTE_SELECTED_RUNNER="$configured"
+		ORCHD_ORCH_ROUTE_DEFAULT_RUNNER="$configured"
+		ORCHD_ORCH_ROUTE_CANDIDATES="$configured"
+		ORCHD_ORCH_ROUTE_FALLBACK_USED="false"
+		ORCHD_ORCH_ROUTE_REASON="using explicit orchestrator.runner override"
+		_orchestrate_write_route_metadata
 		printf '%s\n' "$configured"
 		return 0
 	fi
-	configured=$(config_get "worker.runner" "")
-	if [[ -n "$configured" ]] && [[ "$configured" != "auto" ]]; then
-		printf '%s\n' "$configured"
-		return 0
+	local route_role="planner"
+	if [[ -n "$(swarm_role_candidates_csv "architect")" ]]; then
+		route_role="architect"
 	fi
-	detect_runner
+	local default_runner
+	default_runner=$(detect_runner)
+	swarm_resolve_route "$route_role" "$default_runner" >/dev/null
+	ORCHD_ORCH_ROUTE_ROLE="$route_role"
+	ORCHD_ORCH_ROUTE_SELECTED_RUNNER="$SWARM_ROUTE_SELECTED_RUNNER"
+	ORCHD_ORCH_ROUTE_DEFAULT_RUNNER="$SWARM_ROUTE_DEFAULT_RUNNER"
+	ORCHD_ORCH_ROUTE_CANDIDATES="$SWARM_ROUTE_CANDIDATES"
+	ORCHD_ORCH_ROUTE_FALLBACK_USED="$SWARM_ROUTE_FALLBACK_USED"
+	ORCHD_ORCH_ROUTE_REASON="$SWARM_ROUTE_REASON"
+	_orchestrate_write_route_metadata
+	printf '%s\n' "$ORCHD_ORCH_ROUTE_SELECTED_RUNNER"
+}
+
+_orchestrate_route_role_file() {
+	printf '%s/route_role\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_selected_runner_file() {
+	printf '%s/selected_runner\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_route_reason_file() {
+	printf '%s/route_reason\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_route_fallback_file() {
+	printf '%s/route_fallback_used\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_route_candidates_file() {
+	printf '%s/route_candidates\n' "$(_orchestrate_state_dir)"
+}
+
+_orchestrate_write_route_metadata() {
+	_orchestrate_prepare_dir
+	printf '%s\n' "${ORCHD_ORCH_ROUTE_ROLE:-}" >"$(_orchestrate_route_role_file)"
+	printf '%s\n' "${ORCHD_ORCH_ROUTE_SELECTED_RUNNER:-}" >"$(_orchestrate_selected_runner_file)"
+	printf '%s\n' "${ORCHD_ORCH_ROUTE_REASON:-}" >"$(_orchestrate_route_reason_file)"
+	printf '%s\n' "${ORCHD_ORCH_ROUTE_FALLBACK_USED:-false}" >"$(_orchestrate_route_fallback_file)"
+	printf '%s\n' "${ORCHD_ORCH_ROUTE_CANDIDATES:-}" >"$(_orchestrate_route_candidates_file)"
 }
 
 _orchestrate_state_dir() {
@@ -179,6 +234,10 @@ _orchestrate_attached_session_id_file() {
 	printf '%s/attached_session_id\n' "$(_orchestrate_state_dir)"
 }
 
+_orchestrate_resume_session_id_file() {
+	printf '%s/resume_session_id\n' "$(_orchestrate_state_dir)"
+}
+
 _orchestrate_session_snapshot_file() {
 	printf '%s/opencode_session_snapshot.json\n' "$(_orchestrate_state_dir)"
 }
@@ -199,6 +258,17 @@ _orchestrate_opencode_run() {
 	local opencode_bin
 	opencode_bin=$(_orchestrate_opencode_bin)
 	"$opencode_bin" "$@"
+}
+
+_orchestrate_claude_bin() {
+	config_get "claude_bin" "claude"
+}
+
+_orchestrate_new_session_id() {
+	python - <<'PY'
+import uuid
+print(uuid.uuid4())
+PY
 }
 
 _orchestrate_use_sticky_session() {
@@ -229,13 +299,53 @@ _orchestrate_use_sticky_session() {
 _orchestrate_sticky_supported_runner() {
 	local runner=$1
 	case "$runner" in
-	opencode | codex)
+	opencode | codex | claude)
 		return 0
 		;;
 	*)
 		return 1
 		;;
 	esac
+}
+
+_orchestrate_use_claude_resume_session() {
+	local runner=$1
+	local session_mode=$2
+	local once=$3
+	[[ "$runner" == "claude" ]] || return 1
+	[[ "$once" == "false" ]] || return 1
+	local mode
+	mode=$(printf '%s' "$session_mode" | tr '[:upper:]' '[:lower:]')
+	case "$mode" in
+	auto | resume | session | continue)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+_orchestrate_claude_resume_session_id() {
+	cat "$(_orchestrate_resume_session_id_file)" 2>/dev/null || true
+}
+
+_orchestrate_claude_start_session() {
+	local prompt=$1
+	local out_file=$2
+	local err_file=$3
+	local session_id
+	session_id=$(_orchestrate_new_session_id)
+	printf '%s\n' "$session_id" >"$(_orchestrate_resume_session_id_file)"
+	(cd "$PROJECT_ROOT" && "$(_orchestrate_claude_bin)" -p --session-id "$session_id" "$prompt" --output-format text >"$out_file" 2>"$err_file")
+}
+
+_orchestrate_claude_continue_session() {
+	local session_id=$1
+	local prompt=$2
+	local out_file=$3
+	local err_file=$4
+	(cd "$PROJECT_ROOT" && "$(_orchestrate_claude_bin)" -p -r "$session_id" "$prompt" --output-format text >"$out_file" 2>"$err_file")
 }
 
 _orchestrate_use_attached_opencode_session() {
@@ -380,6 +490,27 @@ _orchestrate_status() {
 		if [[ -n "$attached_session" ]]; then
 			printf 'attached opencode session: %s\n' "$attached_session"
 		fi
+		local resume_session=""
+		resume_session=$(cat "$(_orchestrate_resume_session_id_file)" 2>/dev/null || true)
+		if [[ -n "$resume_session" ]]; then
+			printf 'resume session: %s\n' "$resume_session"
+		fi
+		local route_role=""
+		route_role=$(cat "$(_orchestrate_route_role_file)" 2>/dev/null || true)
+		local route_runner=""
+		route_runner=$(cat "$(_orchestrate_selected_runner_file)" 2>/dev/null || true)
+		local route_reason=""
+		route_reason=$(cat "$(_orchestrate_route_reason_file)" 2>/dev/null || true)
+		local route_fallback=""
+		route_fallback=$(cat "$(_orchestrate_route_fallback_file)" 2>/dev/null || true)
+		if [[ -n "$route_role" || -n "$route_runner" ]]; then
+			printf 'route role: %s\n' "${route_role:-<none>}"
+			printf 'route runner: %s\n' "${route_runner:-<none>}"
+			printf 'route fallback: %s\n' "${route_fallback:-false}"
+			if [[ -n "$route_reason" ]]; then
+				printf 'route reason: %s\n' "$route_reason"
+			fi
+		fi
 		return 0
 	fi
 	if [[ -f "$(_orchestrate_pid_file)" ]]; then
@@ -409,6 +540,7 @@ _orchestrate_stop() {
 	fi
 	rm -f "$(_orchestrate_pid_file)"
 	rm -f "$(_orchestrate_attached_session_id_file)"
+	rm -f "$(_orchestrate_resume_session_id_file)"
 }
 
 _orchestrate_logs() {
@@ -460,6 +592,7 @@ _orchestrate_collect_state() {
 	ORCH_STATE_RUNNING=0
 	ORCH_STATE_DONE=0
 	ORCH_STATE_MERGED=0
+	ORCH_STATE_SPLIT=0
 	ORCH_STATE_FAILED=0
 	ORCH_STATE_CONFLICT=0
 	ORCH_STATE_NEEDS_INPUT=0
@@ -496,6 +629,9 @@ _orchestrate_collect_state() {
 		merged)
 			ORCH_STATE_MERGED=$((ORCH_STATE_MERGED + 1))
 			;;
+		split)
+			ORCH_STATE_SPLIT=$((ORCH_STATE_SPLIT + 1))
+			;;
 		failed)
 			ORCH_STATE_FAILED=$((ORCH_STATE_FAILED + 1))
 			;;
@@ -513,8 +649,8 @@ _orchestrate_collect_state() {
 }
 
 _orchestrate_state_summary() {
-	printf 'tasks total=%d pending=%d running=%d done=%d merged=%d failed=%d conflict=%d needs_input=%d ready(spawn=%d check=%d merge=%d) ideas(pending=%d in_progress=%d)' \
-		"$ORCH_STATE_TOTAL" "$ORCH_STATE_PENDING" "$ORCH_STATE_RUNNING" "$ORCH_STATE_DONE" "$ORCH_STATE_MERGED" \
+	printf 'tasks total=%d pending=%d running=%d done=%d merged=%d split=%d failed=%d conflict=%d needs_input=%d ready(spawn=%d check=%d merge=%d) ideas(pending=%d in_progress=%d)' \
+		"$ORCH_STATE_TOTAL" "$ORCH_STATE_PENDING" "$ORCH_STATE_RUNNING" "$ORCH_STATE_DONE" "$ORCH_STATE_MERGED" "$ORCH_STATE_SPLIT" \
 		"$ORCH_STATE_FAILED" "$ORCH_STATE_CONFLICT" "$ORCH_STATE_NEEDS_INPUT" \
 		"$ORCH_READY_SPAWN" "$ORCH_READY_CHECK" "$ORCH_READY_MERGE" \
 		"$ORCH_QUEUE_PENDING" "$ORCH_QUEUE_IN_PROGRESS"
@@ -660,25 +796,16 @@ _orchestrate_session_passive_stop_detected() {
 }
 
 _orchestrate_session_action_required() {
-	if _orchestrate_completion_eligible; then
-		return 1
-	fi
-	if ((ORCH_STATE_PENDING > 0 || ORCH_STATE_RUNNING > 0 || ORCH_STATE_DONE > 0)); then
-		return 0
-	fi
-	if ((ORCH_STATE_FAILED > 0 || ORCH_STATE_CONFLICT > 0 || ORCH_STATE_NEEDS_INPUT > 0)); then
-		return 0
-	fi
-	if ((ORCH_READY_SPAWN > 0 || ORCH_READY_CHECK > 0 || ORCH_READY_MERGE > 0)); then
-		return 0
-	fi
-	if ((ORCH_QUEUE_PENDING > 0 || ORCH_QUEUE_IN_PROGRESS > 0)); then
-		return 0
-	fi
-	return 1
+	_orchestrate_refresh_scheduler_decision >/dev/null
+	[[ "${ORCH_SCHED_ACTION:-wait}" != "complete" ]]
 }
 
 _orchestrate_session_blocked_only() {
+	_orchestrate_refresh_scheduler_decision >/dev/null
+	[[ "${ORCH_SCHED_ACTION:-wait}" == "blocked" ]]
+}
+
+_orchestrate_blocked_only_from_counts() {
 	if ((ORCH_STATE_NEEDS_INPUT <= 0)); then
 		return 1
 	fi
@@ -695,6 +822,42 @@ _orchestrate_session_blocked_only() {
 		return 1
 	fi
 	return 0
+}
+
+_orchestrate_refresh_scheduler_decision() {
+	local blocked_only=false
+	local completion_eligible=false
+	local ideate_ready=0
+	local recover_ready=0
+
+	if _orchestrate_blocked_only_from_counts; then
+		blocked_only=true
+	fi
+	if _orchestrate_completion_eligible; then
+		completion_eligible=true
+	fi
+	if ((ORCH_QUEUE_PENDING > 0 || ORCH_QUEUE_IN_PROGRESS > 0)); then
+		ideate_ready=$((ORCH_QUEUE_PENDING + ORCH_QUEUE_IN_PROGRESS))
+	fi
+	if ((ORCH_STATE_FAILED > 0 || ORCH_STATE_CONFLICT > 0)); then
+		recover_ready=$((ORCH_STATE_FAILED + ORCH_STATE_CONFLICT))
+	fi
+
+	scheduler_next_action \
+		"$ORCH_READY_MERGE" \
+		"$ORCH_READY_CHECK" \
+		"$ORCH_READY_SPAWN" \
+		"$recover_ready" \
+		"$ideate_ready" \
+		"$blocked_only" \
+		"$completion_eligible" >/dev/null
+
+	ORCH_SCHED_ACTION="$SCHEDULER_ACTION"
+	ORCH_SCHED_REASON="$SCHEDULER_REASON"
+	_orchestrate_prepare_dir
+	scheduler_record_decision "orchestrate" "$ORCH_SCHED_ACTION" "$ORCH_SCHED_REASON"
+	printf '%s\n' "$ORCH_SCHED_ACTION" >"$(_orchestrate_last_idle_decision_file)"
+	printf '%s\n' "$ORCH_SCHED_REASON" >"$(_orchestrate_last_reminder_reason_file)"
 }
 
 _build_orchestrator_prompt() {
@@ -747,9 +910,26 @@ _orchestrate_invoke_runner() {
 		_extract_text_from_jsonl <"$raw_file" >"$out_file" || return 1
 		;;
 	claude)
-		local claude_bin
-		claude_bin=$(config_get "claude_bin" "claude")
-		(cd "$PROJECT_ROOT" && "$claude_bin" -p "$prompt" --output-format text >"$out_file" 2>"$err_file") || return 1
+		if [[ "${ORCHD_ORCH_SESSION_STRATEGY:-classic}" == "claude-resume" ]]; then
+			local session_id
+			session_id=$(_orchestrate_claude_resume_session_id)
+			if [[ -n "$session_id" ]]; then
+				if _orchestrate_claude_continue_session "$session_id" "$prompt" "$out_file" "$err_file"; then
+					return 0
+				fi
+				if grep -Eqi 'session .*not found|invalid session|no conversation found|could not find session' "$err_file" 2>/dev/null; then
+					log_event "WARN" "claude resume session $session_id is unavailable; starting a new managed session"
+					rm -f "$(_orchestrate_resume_session_id_file)"
+				else
+					return 1
+				fi
+			fi
+			_orchestrate_claude_start_session "$prompt" "$out_file" "$err_file" || return 1
+		else
+			local claude_bin
+			claude_bin=$(config_get "claude_bin" "claude")
+			(cd "$PROJECT_ROOT" && "$claude_bin" -p "$prompt" --output-format text >"$out_file" 2>"$err_file") || return 1
+		fi
 		;;
 	opencode)
 		local opencode_bin
@@ -761,7 +941,7 @@ _orchestrate_invoke_runner() {
 		;;
 	custom)
 		local custom_cmd
-		custom_cmd=$(config_get "custom_runner_cmd" "")
+		custom_cmd=$(config_get_custom_runner_cmd)
 		[[ -n "$custom_cmd" ]] || die "custom runner requires 'custom_runner_cmd' in .orchd.toml"
 		custom_cmd=$(replace_token "$custom_cmd" "{prompt}" "$(printf '%q' "$prompt")")
 		custom_cmd=$(replace_token "$custom_cmd" "{worktree}" "$(printf '%q' "$PROJECT_ROOT")")
@@ -798,6 +978,11 @@ _orchestrate_sticky_launch_command() {
 		local opencode_bin
 		opencode_bin=$(_orchestrate_opencode_bin)
 		printf 'cd %q && %q\n' "$PROJECT_ROOT" "$opencode_bin"
+		;;
+	claude)
+		local claude_bin
+		claude_bin=$(_orchestrate_claude_bin)
+		printf 'cd %q && %q\n' "$PROJECT_ROOT" "$claude_bin"
 		;;
 	codex)
 		local codex_bin codex_flags
@@ -903,6 +1088,7 @@ _orchestrate_loop_attached_opencode() {
 		printf '%s\n' "$LAST_TEXT" >"$(_orchestrate_state_dir)/last_output.txt"
 
 		_orchestrate_collect_state
+		_orchestrate_refresh_scheduler_decision
 		local summary state_json state_fingerprint prev_state_fingerprint prev_updated
 		local work_remaining=true
 		summary=$(_orchestrate_state_summary)
@@ -919,7 +1105,7 @@ _orchestrate_loop_attached_opencode() {
 		fi
 		last_state_fingerprint="$state_fingerprint"
 		printf '%s\n' "$stagnation" >"$(_orchestrate_state_dir)/stagnation_count"
-		if ! _orchestrate_session_action_required; then
+		if [[ "${ORCH_SCHED_ACTION:-wait}" == "complete" ]]; then
 			work_remaining=false
 		fi
 
@@ -931,9 +1117,8 @@ _orchestrate_loop_attached_opencode() {
 			printf 'attached opencode session stalled after %d unchanged cycles\n' "$stagnation"
 			return 1
 		fi
-		if [[ "$stop_policy" == "needs_input_only" ]] && _orchestrate_session_blocked_only; then
+		if [[ "$stop_policy" == "needs_input_only" ]] && [[ "${ORCH_SCHED_ACTION:-wait}" == "blocked" ]]; then
 			printf 'orchestrator needs input (attached session blocker state)\n'
-			printf '%s\n' "blocked_only" >"$(_orchestrate_last_idle_decision_file)"
 			return 2
 		fi
 
@@ -964,7 +1149,7 @@ _orchestrate_loop_attached_opencode() {
 			elif ((idle_ms >= idle_timeout * 1000)); then
 				should_remind=true
 				if [[ "$work_remaining" == "true" ]]; then
-					remind_reason="system reminder: the orchestrator session went idle while work remains. Continue orchestration now."
+					remind_reason="system reminder: the orchestrator session went idle while work remains. Next best action: ${ORCH_SCHED_ACTION:-continue} (${ORCH_SCHED_REASON:-continue orchestration})."
 				else
 					remind_reason="system reminder: the orchestrator session went idle with no active tasks. Verify completion and, if there is still product value to add, use orchd ideate/plan and continue orchestrating."
 				fi
@@ -975,11 +1160,7 @@ _orchestrate_loop_attached_opencode() {
 			remind_reason="system reminder: orchd state changed while your session was idle. Re-read state and continue orchestration."
 		fi
 		if [[ "$should_remind" == "false" ]]; then
-			if [[ "$work_remaining" == "true" ]]; then
-				printf '%s\n' "waiting_for_idle_with_work" >"$(_orchestrate_last_idle_decision_file)"
-			else
-				printf '%s\n' "waiting_for_idle_to_ideate" >"$(_orchestrate_last_idle_decision_file)"
-			fi
+			printf '%s\n' "${ORCH_SCHED_ACTION:-wait}" >"$(_orchestrate_last_idle_decision_file)"
 		fi
 
 		if [[ "$should_remind" == "true" ]]; then
@@ -1079,6 +1260,13 @@ _orchestrate_sticky_session_ready() {
 	opencode)
 		return 0
 		;;
+	claude)
+		grep -Fq "Claude Code v" "$out_file" || return 1
+		grep -Fq "? for shortcuts" "$out_file" || return 1
+		grep -Fq "Authentication required" "$out_file" && return 1
+		grep -Fq "Please login" "$out_file" && return 1
+		return 0
+		;;
 	codex)
 		grep -Fq "OpenAI Codex" "$out_file" || return 1
 		grep -Fq "model:     loading" "$out_file" && return 1
@@ -1097,6 +1285,13 @@ _orchestrate_sticky_handle_special_prompts() {
 	local session_name=$2
 	local out_file=$3
 	case "$runner" in
+	claude)
+		if grep -Fq "Accessing workspace:" "$out_file" && grep -Fq "Yes, I trust this folder" "$out_file"; then
+			tmux send-keys -t "$session_name" Enter || return 1
+			sleep 2
+			return 0
+		fi
+		;;
 	codex)
 		if grep -Fq "Do you trust the contents of this directory" "$out_file" && ! grep -Fq "OpenAI Codex" "$out_file"; then
 			tmux send-keys -t "$session_name" "1" Enter || return 1
@@ -1193,6 +1388,7 @@ _orchestrate_loop_sticky() {
 			fi
 
 			_orchestrate_collect_state
+			_orchestrate_refresh_scheduler_decision
 			local pre_summary pre_state_json prompt
 			pre_summary=$(_orchestrate_state_summary)
 			pre_state_json=$(cmd_state --json)
@@ -1285,6 +1481,7 @@ _orchestrate_loop_sticky() {
 		fi
 
 		_orchestrate_collect_state
+		_orchestrate_refresh_scheduler_decision
 		local post_summary post_state_json state_fingerprint combined_fingerprint
 		post_summary=$(_orchestrate_state_summary)
 		post_state_json=$(cmd_state --json)
@@ -1374,10 +1571,13 @@ _orchestrate_loop() {
 	local last_fingerprint=""
 	local stagnation=0
 
-	log_event "INFO" "orchestrator supervisor started (runner=$runner poll=${poll_interval}s once=$once)"
+	log_event "INFO" "orchestrator supervisor started (runner=$runner poll=${poll_interval}s once=$once strategy=${ORCHD_ORCH_SESSION_STRATEGY:-classic})"
 	printf 'orchestrator supervisor started\n'
 	printf '  runner: %s\n' "$runner"
 	printf '  poll:   %ss\n' "$poll_interval"
+	if [[ "${ORCHD_ORCH_SESSION_STRATEGY:-classic}" == "claude-resume" ]]; then
+		printf '  session: resume-managed\n'
+	fi
 	printf '  mode:   %s\n\n' "$([[ "$once" == "true" ]] && printf 'single-turn' || printf 'supervised-loop')"
 
 	while true; do
@@ -1396,6 +1596,7 @@ _orchestrate_loop() {
 		fi
 
 		_orchestrate_collect_state
+		_orchestrate_refresh_scheduler_decision
 		local pre_summary pre_state_json
 		pre_summary=$(_orchestrate_state_summary)
 		pre_state_json=$(cmd_state --json)
@@ -1437,6 +1638,7 @@ _orchestrate_loop() {
 		fi
 
 		_orchestrate_collect_state
+		_orchestrate_refresh_scheduler_decision
 		local post_summary post_state_json fingerprint
 		post_summary=$(_orchestrate_state_summary)
 		post_state_json=$(cmd_state --json)
@@ -1481,7 +1683,13 @@ _orchestrate_loop() {
 			return 0
 		fi
 
-		if ((ORCH_STATE_RUNNING > 0)); then
+		if [[ "${ORCH_SCHED_ACTION:-wait}" == "blocked" ]]; then
+			log_event "WARN" "orchestrator blocked: ${ORCH_SCHED_REASON:-no reason given}"
+			printf 'orchestrator needs input: %s\n' "${ORCH_SCHED_REASON:-blocking state remains}"
+			return 2
+		fi
+
+		if [[ "${ORCH_SCHED_ACTION:-wait}" == "wait" ]] && ((ORCH_STATE_RUNNING > 0)); then
 			printf '  workers running - awaiting state change...\n\n'
 			local wait_output=""
 			if wait_output=$(cmd_await --all --json); then
@@ -1501,7 +1709,11 @@ _orchestrate_loop() {
 			return 1
 		fi
 
-		reason=$(_orchestrate_next_reason "$result" "$result_reason" "$passive_stop" "$post_summary")
+		if [[ "${ORCH_SCHED_ACTION:-wait}" != "wait" ]] && [[ "${ORCH_SCHED_ACTION:-wait}" != "complete" ]]; then
+			reason="system reminder: next best action is ${ORCH_SCHED_ACTION} (${ORCH_SCHED_REASON}). Re-read orchd state and continue orchestration."
+		else
+			reason=$(_orchestrate_next_reason "$result" "$result_reason" "$passive_stop" "$post_summary")
+		fi
 		if ((continue_delay > 0)); then
 			sleep "$continue_delay"
 		fi

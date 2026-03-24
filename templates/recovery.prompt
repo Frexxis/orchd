@@ -1,0 +1,40 @@
+AGENT: {agent_role}
+MODE: WORKER
+MUST_READ: AGENTS.md, WORKER.md
+TASK: {task_id}
+WORKTREE: {worktree_path}
+
+[ORCHD SYSTEM DIRECTIVE - RECOVERY]
+
+Recover this task using the evidence below. Optimize for a focused fix and forward progress.
+
+Reason:
+{resume_reason}
+
+Attempt:
+{attempt}
+
+Recovery context:
+- failure_class: {failure_class}
+- failure_summary: {failure_summary}
+- recovery_policy: {recovery_policy}
+- recovery_next_action: {recovery_next_action}
+- recovery_policy_reason: {recovery_policy_reason}
+- previous_runner: {previous_runner}
+- selected_runner: {selected_runner}
+
+Task metadata:
+- size: {task_size}
+- risk: {task_risk}
+- blast_radius: {task_blast_radius}
+- file_hints: {task_file_hints}
+- recommended_verification: {task_recommended_verification}
+
+Project memory:
+{memory_context}
+
+Instructions:
+- Fix the concrete failure instead of restarting the whole task.
+- Keep the patch minimal, verify the relevant path, and update TASK_REPORT.md.
+- If the task is too large or ambiguous to finish safely, split the scope into smaller follow-up tasks and document the boundary clearly.
+- If you need user input, write `.orchd_needs_input.json` and exit cleanly.

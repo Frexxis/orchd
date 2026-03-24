@@ -115,7 +115,7 @@ EOF
 	esac
 
 	local runner
-	runner=$(detect_runner)
+	runner=$(swarm_select_runner_for_role "builder" "$(detect_runner)")
 	# Runner is required only if we need to spawn pending tasks.
 	# Allow merge-only/check-only autopilot runs without an AI runner installed.
 	if [[ "$runner" != "none" ]]; then
@@ -176,7 +176,7 @@ EOF
 	fi
 
 	log_event "INFO" "autopilot started (poll=${poll_interval}s runner=$runner tasks=$task_count)"
-	printf 'autopilot started\n'
+	printf '%s started\n' "$(_autopilot_mode_name)"
 	printf '  runner:   %s\n' "$runner"
 	printf '  tasks:    %d\n' "$task_count"
 	printf '  poll:     %ss\n' "$poll_interval"
@@ -197,37 +197,16 @@ EOF
 			return 1
 		fi
 
-		# --- Count current states ---
-		local total=0 pending=0 running=0 done_count=0 merged=0 failed=0 conflict=0 needs_input=0
-		local task_id status
-		while IFS= read -r task_id; do
-			[[ -z "$task_id" ]] && continue
-			total=$((total + 1))
-			task_runtime_refresh "$task_id"
-			status="$TASK_RUNTIME_STATUS"
-			case "$status" in
-			pending) pending=$((pending + 1)) ;;
-			running)
-				if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
-					running=$((running + 1))
-				fi
-				;;
-			done) done_count=$((done_count + 1)) ;;
-			merged) merged=$((merged + 1)) ;;
-			failed) failed=$((failed + 1)) ;;
-			conflict) conflict=$((conflict + 1)) ;;
-			needs_input) needs_input=$((needs_input + 1)) ;;
-			esac
-		done <<<"$(task_list_ids)"
+		_autopilot_collect_scheduler_state "$runner"
 
 		local ts
 		ts=$(now_iso)
-		printf '[%s] tick #%d — pending:%d running:%d done:%d merged:%d failed:%d need:%d\n' \
-			"$ts" "$iteration" "$pending" "$running" "$done_count" "$merged" "$failed" "$needs_input"
+		printf '[%s] tick #%d — pending:%d running:%d done:%d merged:%d split:%d failed:%d need:%d\n' \
+			"$ts" "$iteration" "$AUTOPILOT_PENDING" "$AUTOPILOT_RUNNING" "$AUTOPILOT_DONE" "$AUTOPILOT_MERGED" "${AUTOPILOT_SPLIT:-0}" "$AUTOPILOT_FAILED" "$AUTOPILOT_NEEDS_INPUT"
 
 		# --- Terminal: all tasks in final state ---
 		# Note: `failed` is not terminal here because autopilot can retry failed tasks.
-		if ((total > 0)) && ((merged + conflict + needs_input >= total)); then
+		if _autopilot_completion_eligible; then
 			# Check idea queue before exiting — continuous operation
 			if _autopilot_drain_queue "$runner" "$poll_interval"; then
 				# New tasks were created from the queue; restart the loop
@@ -251,7 +230,7 @@ EOF
 					;;
 				2)
 					log_event "INFO" "autopilot: ideate signaled PROJECT_COMPLETE"
-					_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
+					_autopilot_summary "$AUTOPILOT_MERGED" "$AUTOPILOT_FAILED" "$AUTOPILOT_CONFLICT" "$AUTOPILOT_NEEDS_INPUT"
 					return 0
 					;;
 				3)
@@ -262,81 +241,160 @@ EOF
 					;;
 				esac
 			fi
-			_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
+			_autopilot_summary "$AUTOPILOT_MERGED" "$AUTOPILOT_FAILED" "$AUTOPILOT_CONFLICT" "$AUTOPILOT_NEEDS_INPUT"
 			return 0
 		fi
 
-		# --- Phase 1: Check running tasks whose agents have exited ---
-		_autopilot_check_finished
+		local next_action
+		_autopilot_next_action >/dev/null
+		next_action="$SCHEDULER_ACTION"
+		scheduler_record_decision "autopilot" "$next_action" "$SCHEDULER_REASON"
+		log_event "INFO" "autopilot scheduler: action=$next_action reason=$SCHEDULER_REASON"
+		printf '  next action: %s — %s\n' "$next_action" "$SCHEDULER_REASON"
 
-		# --- Phase 2: Retry failed tasks (safe, bounded) ---
-		_autopilot_retry_failed "$runner"
-
-		# --- Phase 3: Merge done tasks (DAG order) ---
-		_autopilot_merge_done
-
-		# --- Phase 4: Spawn newly ready tasks ---
-		_autopilot_spawn_ready "$runner"
-
-		# --- Phase 5: Deadlock detection ---
-		if _autopilot_detect_deadlock; then
-			return 1
-		fi
-
-		# Re-check terminal state after actions to avoid an extra sleep.
-		local total2=0 merged2=0 failed2=0 conflict2=0 needs2=0
-		while IFS= read -r task_id; do
-			[[ -z "$task_id" ]] && continue
-			total2=$((total2 + 1))
-			status=$(task_status "$task_id")
-			case "$status" in
-			merged) merged2=$((merged2 + 1)) ;;
-			failed) failed2=$((failed2 + 1)) ;;
-			conflict) conflict2=$((conflict2 + 1)) ;;
-			needs_input) needs2=$((needs2 + 1)) ;;
-			esac
-		done <<<"$(task_list_ids)"
-		if ((total2 > 0)) && ((merged2 + conflict2 + needs2 >= total2)); then
-			# Check idea queue before exiting — continuous operation
-			if _autopilot_drain_queue "$runner" "$poll_interval"; then
-				continue
-			fi
-
-			if $continuous; then
-				local ideate_rc=0
-				_autopilot_ideate "$runner" "$ideate_cooldown" "$ideate_max_cycles" "$ideate_max_failures" ideate_cycles ideate_failures || ideate_rc=$?
-				case "$ideate_rc" in
-				0)
-					if _autopilot_drain_queue "$runner" "$poll_interval"; then
-						continue
-					fi
-					;;
-				1)
-					printf '  ideate failed — waiting %ss before retry\n' "$poll_interval"
-					sleep "$poll_interval"
-					continue
-					;;
-				2)
-					log_event "INFO" "autopilot: ideate signaled PROJECT_COMPLETE"
-					_autopilot_summary "$merged2" "$failed2" "$conflict2" "$needs2"
-					return 0
-					;;
-				3)
-					# Fatal: no AI runner configured/available
-					printf '  [FATAL] continuous mode requires an AI runner (codex/claude/opencode/aider)\n' >&2
-					log_event "ERROR" "autopilot: continuous mode requires AI runner"
-					return 1
-					;;
-				esac
-			fi
-			_autopilot_summary "$merged2" "$failed2" "$conflict2" "$needs2"
+		case "$next_action" in
+		merge)
+			_autopilot_merge_done
+			continue
+			;;
+		check)
+			_autopilot_check_finished
+			continue
+			;;
+		spawn)
+			_autopilot_spawn_ready "$runner"
+			continue
+			;;
+		recover)
+			_autopilot_retry_failed "$runner"
+			continue
+			;;
+		blocked)
+			_autopilot_summary "$AUTOPILOT_MERGED" "$AUTOPILOT_FAILED" "$AUTOPILOT_CONFLICT" "$AUTOPILOT_NEEDS_INPUT"
 			return 0
-		fi
+			;;
+		wait)
+			if _autopilot_detect_deadlock; then
+				return 1
+			fi
+			;;
+		esac
 
 		# --- Sleep ---
 		printf '  waiting %ss...\n\n' "$poll_interval"
 		sleep "$poll_interval"
 	done
+}
+
+cmd_finish() {
+	ORCHD_AUTOPILOT_PROFILE="finish"
+	export ORCHD_AUTOPILOT_PROFILE
+	cmd_autopilot --deterministic --continuous "$@"
+}
+
+_autopilot_collect_scheduler_state() {
+	local runner=${1:-}
+	AUTOPILOT_TOTAL=0
+	AUTOPILOT_PENDING=0
+	AUTOPILOT_RUNNING=0
+	AUTOPILOT_DONE=0
+	AUTOPILOT_MERGED=0
+	AUTOPILOT_SPLIT=0
+	AUTOPILOT_FAILED=0
+	AUTOPILOT_CONFLICT=0
+	AUTOPILOT_NEEDS_INPUT=0
+	AUTOPILOT_READY_MERGE=0
+	AUTOPILOT_READY_CHECK=0
+	AUTOPILOT_READY_SPAWN=0
+	AUTOPILOT_READY_RECOVER=0
+
+	local task_id status
+	while IFS= read -r task_id; do
+		[[ -z "$task_id" ]] && continue
+		AUTOPILOT_TOTAL=$((AUTOPILOT_TOTAL + 1))
+		task_runtime_refresh "$task_id"
+		status="$TASK_RUNTIME_STATUS"
+		case "$status" in
+		pending)
+			AUTOPILOT_PENDING=$((AUTOPILOT_PENDING + 1))
+			if task_is_ready "$task_id"; then
+				AUTOPILOT_READY_SPAWN=$((AUTOPILOT_READY_SPAWN + 1))
+			fi
+			;;
+		running)
+			if [[ "$TASK_RUNTIME_AGENT_ALIVE" == "true" ]]; then
+				AUTOPILOT_RUNNING=$((AUTOPILOT_RUNNING + 1))
+			else
+				AUTOPILOT_READY_CHECK=$((AUTOPILOT_READY_CHECK + 1))
+			fi
+			;;
+		done)
+			AUTOPILOT_DONE=$((AUTOPILOT_DONE + 1))
+			if _deps_all_merged "$task_id"; then
+				AUTOPILOT_READY_MERGE=$((AUTOPILOT_READY_MERGE + 1))
+			fi
+			;;
+		merged)
+			AUTOPILOT_MERGED=$((AUTOPILOT_MERGED + 1))
+			;;
+		split)
+			AUTOPILOT_SPLIT=$((AUTOPILOT_SPLIT + 1))
+			;;
+		failed)
+			AUTOPILOT_FAILED=$((AUTOPILOT_FAILED + 1))
+			AUTOPILOT_READY_RECOVER=$((AUTOPILOT_READY_RECOVER + 1))
+			;;
+		conflict)
+			AUTOPILOT_CONFLICT=$((AUTOPILOT_CONFLICT + 1))
+			AUTOPILOT_READY_RECOVER=$((AUTOPILOT_READY_RECOVER + 1))
+			;;
+		needs_input)
+			AUTOPILOT_NEEDS_INPUT=$((AUTOPILOT_NEEDS_INPUT + 1))
+			;;
+		esac
+	done <<<"$(task_list_ids)"
+}
+
+_autopilot_completion_eligible() {
+	if ((AUTOPILOT_TOTAL <= 0)); then
+		return 1
+	fi
+	((${AUTOPILOT_MERGED:-0} + ${AUTOPILOT_SPLIT:-0} + ${AUTOPILOT_NEEDS_INPUT:-0} >= AUTOPILOT_TOTAL))
+}
+
+_autopilot_blocked_only() {
+	if ((AUTOPILOT_NEEDS_INPUT <= 0)); then
+		return 1
+	fi
+	if ((AUTOPILOT_PENDING > 0 || AUTOPILOT_RUNNING > 0 || AUTOPILOT_DONE > 0)); then
+		return 1
+	fi
+	if ((AUTOPILOT_READY_MERGE > 0 || AUTOPILOT_READY_CHECK > 0 || AUTOPILOT_READY_SPAWN > 0 || AUTOPILOT_READY_RECOVER > 0)); then
+		return 1
+	fi
+	if ((AUTOPILOT_FAILED > 0 || AUTOPILOT_CONFLICT > 0)); then
+		return 1
+	fi
+	return 0
+}
+
+_autopilot_next_action() {
+	local blocked_only=false
+	local completion_eligible=false
+	if _autopilot_blocked_only; then
+		blocked_only=true
+	fi
+	if _autopilot_completion_eligible; then
+		completion_eligible=true
+	fi
+	scheduler_next_action \
+		"$AUTOPILOT_READY_MERGE" \
+		"$AUTOPILOT_READY_CHECK" \
+		"$AUTOPILOT_READY_SPAWN" \
+		"$AUTOPILOT_READY_RECOVER" \
+		0 \
+		"$blocked_only" \
+		"$completion_eligible"
 }
 
 _autopilot_delegate_ai() {
@@ -379,13 +437,15 @@ _autopilot_delegate_ai() {
 }
 
 _autopilot_pid_file() {
-	# shellcheck disable=SC2153
-	printf '%s/autopilot.pid' "$ORCHD_DIR"
+	printf '%s/%s.pid\n' "$ORCHD_DIR" "$(_autopilot_mode_name)"
 }
 
 _autopilot_log_file() {
-	# shellcheck disable=SC2153
-	printf '%s/autopilot.log' "$ORCHD_DIR"
+	printf '%s/%s.log\n' "$ORCHD_DIR" "$(_autopilot_mode_name)"
+}
+
+_autopilot_mode_name() {
+	printf '%s\n' "${ORCHD_AUTOPILOT_PROFILE:-autopilot}"
 }
 
 _autopilot_is_running() {
@@ -403,50 +463,56 @@ _autopilot_is_running() {
 
 _autopilot_status() {
 	local pid_file
+	local mode_name
+	mode_name=$(_autopilot_mode_name)
 	pid_file=$(_autopilot_pid_file)
 	if _autopilot_is_running; then
 		local pid
 		pid=$(cat "$pid_file" 2>/dev/null || true)
-		printf 'autopilot daemon: running (pid %s)\n' "$pid"
+		printf '%s daemon: running (pid %s)\n' "$mode_name" "$pid"
 		printf 'log: %s\n' "$(_autopilot_log_file)"
 		return 0
 	fi
 	if [[ -f "$pid_file" ]]; then
-		printf 'autopilot daemon: not running (stale pid file)\n'
+		printf '%s daemon: not running (stale pid file)\n' "$mode_name"
 	else
-		printf 'autopilot daemon: not running\n'
+		printf '%s daemon: not running\n' "$mode_name"
 	fi
 	return 1
 }
 
 _autopilot_stop() {
 	local pid_file
+	local mode_name
+	mode_name=$(_autopilot_mode_name)
 	pid_file=$(_autopilot_pid_file)
 	if ! [[ -f "$pid_file" ]]; then
-		printf 'autopilot daemon: not running\n'
+		printf '%s daemon: not running\n' "$mode_name"
 		return 0
 	fi
 	local pid
 	pid=$(cat "$pid_file" 2>/dev/null || true)
 	if [[ -z "$pid" ]]; then
 		rm -f "$pid_file"
-		printf 'autopilot daemon: pid file removed\n'
+		printf '%s daemon: pid file removed\n' "$mode_name"
 		return 0
 	fi
 	if kill -0 "$pid" >/dev/null 2>&1; then
 		kill "$pid" >/dev/null 2>&1 || true
-		printf 'autopilot daemon: stopped (pid %s)\n' "$pid"
+		printf '%s daemon: stopped (pid %s)\n' "$mode_name" "$pid"
 	else
-		printf 'autopilot daemon: not running (stale pid %s)\n' "$pid"
+		printf '%s daemon: not running (stale pid %s)\n' "$mode_name" "$pid"
 	fi
 	rm -f "$pid_file"
 }
 
 _autopilot_logs() {
 	local log_file
+	local mode_name
+	mode_name=$(_autopilot_mode_name)
 	log_file=$(_autopilot_log_file)
 	if [[ ! -f "$log_file" ]]; then
-		printf 'autopilot log not found: %s\n' "$log_file"
+		printf '%s log not found: %s\n' "$mode_name" "$log_file"
 		return 1
 	fi
 	tail -n 200 -f "$log_file"
@@ -475,6 +541,9 @@ _autopilot_start_daemon() {
 	[[ -n "${ORCHD_BIN:-}" ]] || die "ORCHD_BIN not set (internal error)"
 
 	local args="autopilot"
+	if [[ "$(_autopilot_mode_name)" == "finish" ]]; then
+		args="finish"
+	fi
 	if [[ "${_AUTOPILOT_SELECTED_ENGINE:-}" == "deterministic" ]]; then
 		args+=" --deterministic"
 	fi
@@ -489,7 +558,7 @@ _autopilot_start_daemon() {
 	nohup "$ORCHD_BIN" $args >"$log_file" 2>&1 &
 	local pid=$!
 	printf '%s\n' "$pid" >"$pid_file"
-	printf 'autopilot daemon started (pid %s)\n' "$pid"
+	printf '%s daemon started (pid %s)\n' "$(_autopilot_mode_name)" "$pid"
 	printf 'log: %s\n' "$log_file"
 }
 
@@ -597,13 +666,45 @@ _autopilot_retry_failed() {
 	while IFS= read -r task_id; do
 		[[ -z "$task_id" ]] && continue
 		status=$(task_status "$task_id")
-		[[ "$status" == "failed" ]] || continue
+		[[ "$status" == "failed" || "$status" == "conflict" ]] || continue
+
+		local failure_class recovery_policy resume_reason
+		failure_class=$(task_get "$task_id" "failure_class" "")
+		if [[ -z "$failure_class" ]]; then
+			failure_class=$(recovery_classify_failure "$task_id" "$(task_get "$task_id" "failure_check_file" "")")
+			recovery_task_update_state "$task_id" "$failure_class" "$(task_get "$task_id" "failure_check_file" "")"
+		fi
+		recovery_policy=$(task_get "$task_id" "recovery_policy" "")
+		if [[ -z "$recovery_policy" ]]; then
+			recovery_policy_for_class "$task_id" "$failure_class" >/dev/null
+			task_set "$task_id" "recovery_policy" "$RECOVERY_POLICY"
+			task_set "$task_id" "recovery_next_action" "$RECOVERY_NEXT_ACTION"
+			task_set "$task_id" "recovery_policy_reason" "$RECOVERY_POLICY_REASON"
+			recovery_policy="$RECOVERY_POLICY"
+		fi
+
+		if ! recovery_policy_allows_auto_retry "$recovery_policy"; then
+			task_mark_needs_input "$task_id" "system" "Recovery policy requires human input" "$failure_class" "Investigate the failure and decide how to continue" "true"
+			recovery_task_update_state "$task_id" "needs_input" "$(task_get "$task_id" "failure_check_file" "")"
+			log_event "WARN" "autopilot: $task_id needs_input (policy=$recovery_policy class=$failure_class)"
+			continue
+		fi
 
 		# If no AI runner is available, we cannot retry; mark as needs_input.
 		if [[ "$runner" == "none" ]]; then
 			task_mark_needs_input "$task_id" "system" "No AI runner available for retry" "no_runner" "Install/configure a supported runner and retry" "true"
-			task_set "$task_id" "last_failure_reason" "no_runner"
+			recovery_task_update_state "$task_id" "needs_input" "$(task_get "$task_id" "failure_check_file" "")"
 			log_event "WARN" "autopilot: $task_id needs_input (no runner available to retry)"
+			continue
+		fi
+
+		if [[ "$recovery_policy" == "replan_split" ]]; then
+			task_set "$task_id" "last_retry_epoch" "$now_epoch"
+			printf '  replanning: %s (policy=%s)\n' "$task_id" "$recovery_policy"
+			if _autopilot_replan_split_task "$task_id"; then
+				continue
+			fi
+			log_event "WARN" "autopilot: split replan failed for $task_id; leaving task failed"
 			continue
 		fi
 
@@ -612,6 +713,7 @@ _autopilot_retry_failed() {
 		if [[ -z "$worktree" ]] || [[ ! -d "$worktree" ]]; then
 			# Can't retry without a worktree
 			task_mark_needs_input "$task_id" "system" "Task worktree is missing" "missing_worktree" "Recreate worktree and resume task" "true"
+			recovery_task_update_state "$task_id" "needs_input" "$(task_get "$task_id" "failure_check_file" "")"
 			log_event "WARN" "autopilot: $task_id needs_input (missing worktree)"
 			continue
 		fi
@@ -620,6 +722,7 @@ _autopilot_retry_failed() {
 		if [[ "$ORCHD_NEEDS_INPUT_PRESENT" == "true" ]]; then
 			task_mark_needs_input "$task_id" "$ORCHD_NEEDS_INPUT_SOURCE" "$ORCHD_NEEDS_INPUT_SUMMARY" "$ORCHD_NEEDS_INPUT_CODE" "$ORCHD_NEEDS_INPUT_QUESTION" "$ORCHD_NEEDS_INPUT_BLOCKING" "$ORCHD_NEEDS_INPUT_OPTIONS" "$ORCHD_NEEDS_INPUT_FILE"
 			task_set "$task_id" "needs_input_error" "$ORCHD_NEEDS_INPUT_ERROR"
+			recovery_task_update_state "$task_id" "needs_input" "$(task_get "$task_id" "failure_check_file" "")"
 			log_event "WARN" "autopilot: $task_id needs_input (.orchd_needs_input artifact)"
 			continue
 		fi
@@ -632,7 +735,7 @@ _autopilot_retry_failed() {
 
 		if ((attempts >= retry_limit)); then
 			task_mark_needs_input "$task_id" "system" "Retry limit exhausted" "retries_exhausted" "Investigate failure and resume manually" "true"
-			task_set "$task_id" "last_failure_reason" "retries_exhausted"
+			recovery_task_update_state "$task_id" "needs_input" "$(task_get "$task_id" "failure_check_file" "")"
 			log_event "WARN" "autopilot: $task_id needs_input (retries exhausted: $attempts/$retry_limit)"
 			continue
 		fi
@@ -650,9 +753,202 @@ _autopilot_retry_failed() {
 		fi
 
 		task_set "$task_id" "last_retry_epoch" "$now_epoch"
-		printf '  retrying: %s (attempt %d/%d)\n' "$task_id" $((attempts + 1)) "$retry_limit"
-		(_resume_single "$task_id" "autopilot retry: quality gate failed" 2>&1) | sed 's/^/    /' || true
+		resume_reason=$(recovery_resume_reason_for_task "$task_id")
+		printf '  retrying: %s (attempt %d/%d, class=%s, policy=%s)\n' "$task_id" $((attempts + 1)) "$retry_limit" "$failure_class" "$recovery_policy"
+		(_resume_single "$task_id" "$resume_reason" 2>&1) | sed 's/^/    /' || true
 	done <<<"$(task_list_ids)"
+}
+
+_autopilot_replan_split_task() {
+	local task_id=$1
+	local title description acceptance failure_class failure_summary prefix prompt_desc split_children original_deps leaf_children
+	title=$(task_get "$task_id" "title" "$task_id")
+	description=$(task_get "$task_id" "description" "")
+	acceptance=$(task_get "$task_id" "acceptance" "")
+	failure_class=$(task_get "$task_id" "failure_class" "scope_confusion")
+	failure_summary=$(task_get "$task_id" "failure_summary" "")
+	original_deps=$(task_get "$task_id" "deps" "")
+	prefix="${task_id}-"
+	prompt_desc=$(
+		cat <<EOF
+Split one failed orchd task into 2-4 smaller dependency-safe tasks.
+
+Original task id: $task_id
+Title: $title
+Description: $description
+Acceptance: $acceptance
+Original upstream deps: ${original_deps:-none}
+Failure class: $failure_class
+Failure summary: $failure_summary
+
+Requirements:
+- Output only the standard TASK/TITLE/ROLE/DEPS/DESCRIPTION/ACCEPTANCE plan format.
+- Keep the same end-user goal, but reduce scope per task.
+- Prefer linear or lightly parallel subtasks with clear boundaries.
+- Avoid broad umbrella tasks.
+- Any split task that can start immediately must preserve the original upstream deps.
+- Never depend on the original task id; use only the new split task ids or existing external deps.
+- Reference existing repo reality; do not invent unrelated work.
+EOF
+	)
+
+	if (cmd_plan --append --prefix "$prefix" "$prompt_desc" >/dev/null 2>&1); then
+		split_children=$(task_list_ids | grep "^${prefix}" | paste -sd ',' - || true)
+		_autopilot_split_preserve_upstream_deps "$task_id" "$original_deps" "$split_children"
+		leaf_children=$(_autopilot_split_rewire_dependents "$task_id" "$split_children")
+		task_set "$task_id" "status" "split"
+		task_set "$task_id" "split_at" "$(now_iso)"
+		task_set "$task_id" "split_children" "$split_children"
+		task_set "$task_id" "split_reason" "$failure_summary"
+		task_set "$task_id" "last_failure_reason" "split_into_subtasks"
+		log_event "INFO" "autopilot: task split into follow-up tasks $task_id -> ${split_children:-unknown} (downstream now waits on ${leaf_children:-none})"
+		return 0
+	fi
+	return 1
+}
+
+_autopilot_csv_contains() {
+	local csv=$1
+	local needle=$2
+	local item cleaned
+	while IFS=',' read -r -a csv_arr; do
+		for item in "${csv_arr[@]}"; do
+			cleaned=$(printf '%s' "$item" | tr -d '[:space:]')
+			[[ -n "$cleaned" ]] || continue
+			[[ "$cleaned" == "$needle" ]] && return 0
+		done
+	done <<<"$csv"
+	return 1
+}
+
+_autopilot_csv_add_unique() {
+	local merged="" raw item cleaned
+	for raw in "$@"; do
+		while IFS=',' read -r -a csv_arr; do
+			for item in "${csv_arr[@]}"; do
+				cleaned=$(printf '%s' "$item" | tr -d '[:space:]')
+				[[ -n "$cleaned" ]] || continue
+				if _autopilot_csv_contains "$merged" "$cleaned"; then
+					continue
+				fi
+				if [[ -n "$merged" ]]; then
+					merged+=","
+				fi
+				merged+="$cleaned"
+			done
+		done <<<"$raw"
+	done
+	printf '%s\n' "$merged"
+}
+
+_autopilot_csv_replace_target() {
+	local csv=$1
+	local target=$2
+	local replacement_csv=$3
+	local rewritten="" item cleaned
+	while IFS=',' read -r -a csv_arr; do
+		for item in "${csv_arr[@]}"; do
+			cleaned=$(printf '%s' "$item" | tr -d '[:space:]')
+			[[ -n "$cleaned" ]] || continue
+			if [[ "$cleaned" == "$target" ]]; then
+				rewritten=$(_autopilot_csv_add_unique "$rewritten" "$replacement_csv")
+			else
+				rewritten=$(_autopilot_csv_add_unique "$rewritten" "$cleaned")
+			fi
+		done
+	done <<<"$csv"
+	printf '%s\n' "$rewritten"
+}
+
+_autopilot_split_has_internal_dep() {
+	local deps=$1
+	local split_children=$2
+	local dep cleaned
+	while IFS=',' read -r -a dep_arr; do
+		for dep in "${dep_arr[@]}"; do
+			cleaned=$(printf '%s' "$dep" | tr -d '[:space:]')
+			[[ -n "$cleaned" ]] || continue
+			if _autopilot_csv_contains "$split_children" "$cleaned"; then
+				return 0
+			fi
+		done
+	done <<<"$deps"
+	return 1
+}
+
+_autopilot_split_leaf_children() {
+	local split_children=$1
+	local leaf_children="" child other deps
+	while IFS=',' read -r -a child_arr; do
+		for child in "${child_arr[@]}"; do
+			child=$(printf '%s' "$child" | tr -d '[:space:]')
+			[[ -n "$child" ]] || continue
+			local is_leaf=true
+			while IFS=',' read -r -a other_arr; do
+				for other in "${other_arr[@]}"; do
+					other=$(printf '%s' "$other" | tr -d '[:space:]')
+					[[ -n "$other" && "$other" != "$child" ]] || continue
+					deps=$(task_get "$other" "deps" "")
+					if _autopilot_csv_contains "$deps" "$child"; then
+						is_leaf=false
+						break
+					fi
+				done
+				$is_leaf || break
+			done <<<"$split_children"
+			if $is_leaf; then
+				leaf_children=$(_autopilot_csv_add_unique "$leaf_children" "$child")
+			fi
+		done
+	done <<<"$split_children"
+	printf '%s\n' "$leaf_children"
+}
+
+_autopilot_split_preserve_upstream_deps() {
+	local task_id=$1
+	local original_deps=$2
+	local split_children=$3
+	local child deps rewritten
+
+	[[ -n "$split_children" ]] || return 0
+
+	while IFS=',' read -r -a child_arr; do
+		for child in "${child_arr[@]}"; do
+			child=$(printf '%s' "$child" | tr -d '[:space:]')
+			[[ -n "$child" ]] || continue
+			deps=$(task_get "$child" "deps" "")
+			rewritten=$(_autopilot_csv_replace_target "$deps" "$task_id" "$original_deps")
+			if [[ -n "$original_deps" ]] && ! _autopilot_split_has_internal_dep "$rewritten" "$split_children"; then
+				rewritten=$(_autopilot_csv_add_unique "$rewritten" "$original_deps")
+			fi
+			task_set "$child" "deps" "$rewritten"
+		done
+	done <<<"$split_children"
+}
+
+_autopilot_split_rewire_dependents() {
+	local task_id=$1
+	local split_children=$2
+	local leaf_children dependent deps rewritten
+
+	leaf_children=$(_autopilot_split_leaf_children "$split_children")
+	[[ -n "$leaf_children" ]] || leaf_children="$split_children"
+
+	while IFS= read -r dependent; do
+		[[ -n "$dependent" && "$dependent" != "$task_id" ]] || continue
+		if _autopilot_csv_contains "$split_children" "$dependent"; then
+			continue
+		fi
+		deps=$(task_get "$dependent" "deps" "")
+		[[ -n "$deps" ]] || continue
+		if ! _autopilot_csv_contains "$deps" "$task_id"; then
+			continue
+		fi
+		rewritten=$(_autopilot_csv_replace_target "$deps" "$task_id" "$leaf_children")
+		task_set "$dependent" "deps" "$rewritten"
+	done <<<"$(task_list_ids)"
+
+	printf '%s\n' "$leaf_children"
 }
 
 # --- Phase 2: merge done tasks ---
@@ -741,11 +1037,27 @@ _autopilot_detect_deadlock() {
 			[[ -z "$task_id" ]] && continue
 			status=$(task_status "$task_id")
 			if [[ "$status" == "pending" ]]; then
-				task_mark_needs_input "$task_id" "system" "Dependency deadlock detected" "dependency_deadlock" "Resolve dependency chain and resume" "true"
+				local deps code summary question options blocker_dep blocker_status split_children
+				code="dependency_deadlock"
+				summary="Dependency deadlock detected"
+				question="Resolve dependency chain and resume"
+				options=""
+				if task_dependency_blocker "$task_id"; then
+					blocker_dep="$TASK_DEPENDENCY_BLOCKER_ID"
+					blocker_status="$TASK_DEPENDENCY_BLOCKER_STATUS"
+					if [[ "$blocker_status" == "split" ]]; then
+						split_children=$(task_get "$blocker_dep" "split_children" "")
+						code="split_dependency"
+						summary="Dependency references split task: ${blocker_dep}"
+						question="Replace dependency ${blocker_dep} with its split child tasks and resume"
+						options="$split_children"
+					fi
+				fi
+				task_mark_needs_input "$task_id" "system" "$summary" "$code" "$question" "true" "$options"
 				local deps
 				deps=$(task_get "$task_id" "deps" "")
 				printf '  deadlock: %s -> needs_input (deps: %s)\n' "$task_id" "$deps"
-				log_event "WARN" "deadlock: $task_id marked needs_input (deps: $deps)"
+				log_event "WARN" "deadlock: $task_id marked needs_input (code=$code deps: $deps)"
 			fi
 		done <<<"$(task_list_ids)"
 
@@ -852,12 +1164,18 @@ _autopilot_drain_queue() {
 # --- Final summary ---
 _autopilot_summary() {
 	local merged=$1 failed=$2 conflict=$3 needs_input=$4
+	local mode_name
+	mode_name=$(_autopilot_mode_name)
+	local split_count=${AUTOPILOT_SPLIT:-0}
 
 	printf '\n'
 	printf '┌─────────────────────────────────────┐\n'
-	printf '│        autopilot complete            │\n'
+	printf '│        %-28s│\n' "${mode_name} complete"
 	printf '├─────────────────────────────────────┤\n'
 	printf '│  merged:   %-4d                      │\n' "$merged"
+	if ((split_count > 0)); then
+		printf '│  split:    %-4d                      │\n' "$split_count"
+	fi
 	printf '│  failed:   %-4d                      │\n' "$failed"
 	if ((needs_input > 0)); then
 		printf '│  need:     %-4d                      │\n' "$needs_input"

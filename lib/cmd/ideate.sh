@@ -65,7 +65,7 @@ EOF
 	if [[ -n "$runner_override" ]]; then
 		runner="$runner_override"
 	else
-		runner=$(detect_runner)
+		runner=$(swarm_select_runner_for_role "planner" "$(detect_runner)")
 	fi
 	if [[ "$runner" == "none" ]]; then
 		die "no AI runner available. Install codex, claude, opencode, or aider."
@@ -215,7 +215,7 @@ EOF
 	local parse_rc=0
 	if (
 		set +e
-		_ideate_parse_output "$ideate_output" "$dry_run" "$allow_project_complete"
+		_ideate_parse_output "$ideate_output" "$dry_run" "$allow_project_complete" "scope"
 	); then
 		parse_rc=0
 	else
@@ -244,7 +244,7 @@ EOF
 		local follow_on_rc=0
 		if (
 			set +e
-			_ideate_parse_output "$follow_on_output" "$dry_run" true
+			_ideate_parse_output "$follow_on_output" "$dry_run" true "follow_on"
 		); then
 			follow_on_rc=0
 		else
@@ -254,6 +254,19 @@ EOF
 	fi
 
 	return $parse_rc
+}
+
+_finish_state_dir() {
+	printf '%s/finish\n' "$ORCHD_DIR"
+}
+
+finish_record_state() {
+	local state=$1
+	local reason=${2:-}
+	mkdir -p "$(_finish_state_dir)"
+	printf '%s\n' "$state" >"$(_finish_state_dir)/state"
+	printf '%s\n' "$reason" >"$(_finish_state_dir)/reason"
+	printf '%s\n' "$(now_iso)" >"$(_finish_state_dir)/updated_at"
 }
 
 _ideate_normalize_completion_policy() {
@@ -340,7 +353,7 @@ _ideate_execute_prompt() {
 		;;
 	custom)
 		local custom_cmd
-		custom_cmd=$(config_get "custom_runner_cmd" "")
+		custom_cmd=$(config_get_custom_runner_cmd)
 		if [[ -z "$custom_cmd" ]]; then
 			die "custom runner requires 'custom_runner_cmd' in .orchd.toml"
 		fi
@@ -393,12 +406,13 @@ EOF
 }
 
 # Parse ideate output: extract IDEA/REASON lines or PROJECT_COMPLETE.
-# Args: $1 = output file path, $2 = dry_run (true/false), $3 = allow_project_complete (true/false)
+# Args: $1 = output file path, $2 = dry_run (true/false), $3 = allow_project_complete (true/false), $4 = phase name
 # Returns: 0 = ideas pushed, 1 = parse error, 2 = PROJECT_COMPLETE
 _ideate_parse_output() {
 	local output_file=$1
 	local dry_run=${2:-false}
 	local allow_project_complete=${3:-true}
+	local phase_name=${4:-scope}
 
 	local max_ideas
 	max_ideas=$(config_get_int "ideate.max_ideas" "5")
@@ -458,6 +472,7 @@ _ideate_parse_output() {
 	# Handle PROJECT_COMPLETE
 	if $project_complete; then
 		if [[ "$allow_project_complete" != "true" ]]; then
+			finish_record_state "scope_complete" "${complete_reason:-scope appears complete}"
 			log_event "INFO" "ideate: PROJECT_COMPLETE candidate deferred for follow-on ideation — ${complete_reason:-no reason given}"
 			return 2
 		fi
@@ -469,11 +484,13 @@ _ideate_parse_output() {
 		if [[ -n "$complete_reason" ]]; then
 			printf 'reason: %s\n' "$complete_reason"
 		fi
+		finish_record_state "project_complete" "${complete_reason:-all scoped work appears complete}"
 		log_event "INFO" "ideate: PROJECT_COMPLETE — ${complete_reason:-no reason given}"
 		return 2
 	fi
 
 	if ((idea_count == 0)); then
+		finish_record_state "stalled" "ideate produced no parseable ideas"
 		printf 'warning: no ideas parsed from output\n' >&2
 		printf '  check: %s\n' "$output_file" >&2
 		log_event "WARN" "ideate: no ideas parsed from output"
@@ -482,6 +499,11 @@ _ideate_parse_output() {
 
 	printf '\nideate: %d idea(s) %s\n' "$idea_count" \
 		"$($dry_run && printf 'found (dry-run, not queued)' || printf 'queued')"
+	if [[ "$phase_name" == "follow_on" ]]; then
+		finish_record_state "next_phase_available" "follow-on work was generated after scope completion"
+	else
+		finish_record_state "backlog_available" "implementation-ready ideas were generated"
+	fi
 	log_event "INFO" "ideate: $idea_count ideas generated"
 	return 0
 }

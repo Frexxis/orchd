@@ -30,6 +30,14 @@ ORCHD_LIB_DIR="$(dirname "$SELF")/../lib"
 source "$ORCHD_LIB_DIR/core.sh"
 # shellcheck source=../lib/runner.sh
 source "$ORCHD_LIB_DIR/runner.sh"
+# shellcheck source=../lib/swarm.sh
+source "$ORCHD_LIB_DIR/swarm.sh"
+# shellcheck source=../lib/decision_trace.sh
+source "$ORCHD_LIB_DIR/decision_trace.sh"
+# shellcheck source=../lib/verify.sh
+source "$ORCHD_LIB_DIR/verify.sh"
+# shellcheck source=../lib/recovery.sh
+source "$ORCHD_LIB_DIR/recovery.sh"
 # shellcheck source=../lib/cmd/init.sh
 source "$ORCHD_LIB_DIR/cmd/init.sh"
 # shellcheck source=../lib/cmd/plan.sh
@@ -77,7 +85,7 @@ orchd - autonomous AI agent orchestrator
 Orchestration commands:
   orchd init   [dir] [description]     Initialize orchd in a project
   orchd plan   [--runner <runner>] "<description>"   Generate task DAG with AI
-  orchd review [ref]                   Run review-only agent on changes
+  orchd review [ref] | --task <id>     Run review-only agent on changes or a task diff
   orchd spawn  <task-id> | --all       Create worktrees & launch agents
   orchd board  [--watch]               Live agent status dashboard
   orchd tui    [--project <dir>]       Rich terminal UI dashboard (Go binary)
@@ -101,6 +109,11 @@ Orchestration commands:
   orchd autopilot --status              Show active autopilot daemon status
   orchd autopilot --stop                Stop active autopilot daemon
   orchd autopilot --logs                Tail active autopilot daemon log
+  orchd finish [poll_seconds]           Throughput-first project finisher loop
+  orchd finish --daemon [poll]          Run finisher loop in background
+  orchd finish --status                 Show active finisher daemon status
+  orchd finish --stop                   Stop active finisher daemon
+  orchd finish --logs                   Tail active finisher daemon log
   orchd doctor [dir]                   Show effective config and auto-detect
   orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR/CLAUDE/OPENCODE/runbook docs
 
@@ -325,6 +338,9 @@ case "$cmd" in
     ;;
   autopilot)
     cmd_autopilot "$@"
+    ;;
+  finish)
+    cmd_finish "$@"
     ;;
   memory)
     cmd_memory "$@"

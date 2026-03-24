@@ -110,7 +110,7 @@ orchd orchestrate --daemon 30
 
 This keeps an AI orchestrator alive under supervisor control. If the agent stops before the project reaches a terminal state, orchd rebuilds state, injects a system reminder, and reinvokes it.
 
-With `opencode`, keeping `orchestrator.session_mode = "auto"` lets orchd first try to adopt the most recent opencode session in the current project and inject reminders into that same conversation (oh-my-openagent-style continuation). If no suitable session exists, orchd falls back to managed sticky/reinvoke behavior. With `codex`, sticky mode still uses a managed interactive session.
+With `opencode`, keeping `orchestrator.session_mode = "auto"` lets orchd first try to adopt the most recent opencode session in the current project and inject reminders into that same conversation (oh-my-openagent-style continuation). If no suitable session exists, orchd falls back to managed sticky/reinvoke behavior. With `codex`, sticky mode still uses a managed interactive session. With `claude`, `session_mode = "auto"` now prefers a managed sticky interactive session for idle wake-ups and falls back to a managed resume session when sticky startup is unavailable.
 
 For an always-on orchestrator, prefer `orchestrator.stop_policy = "needs_input_only"` and `max_reminders = 0`; this keeps sending continuation reminders when the session goes idle, even if the current task graph looks complete.
 
@@ -127,6 +127,14 @@ orchd autopilot --deterministic --daemon --continuous 30
 ```
 
 Continuous mode uses `orchd ideate` when the idea queue is empty to generate the next backlog from `docs/memory/` and the codebase. It stops only when ideation returns `PROJECT_COMPLETE`.
+
+For deterministic project-finisher behavior, use:
+
+```bash
+orchd finish --daemon 30
+```
+
+`finish` is the throughput-first completion profile: adaptive verification, recovery/splitting, reviewer escalation for risky merge overrides, and follow-on ideation until there is either a genuine blocker or terminal completion.
 
 Use `orchd orchestrate --status|--logs|--stop` for supervised AI mode,
 or `orchd autopilot --status|--logs|--stop` for deterministic mode.
@@ -340,6 +348,20 @@ The orchestrator is considered successful when:
 - Rework rate decreases
 - Merge conflict count decreases
 - Regression-free delivery rate increases across wave closeouts
+
+## 15.1 Safe Rollout
+
+Recommended swarm rollout sequence:
+
+- `swarm_mode = "off"` -> legacy behavior only
+- `swarm_mode = "observe"` -> route selection + telemetry first
+- `swarm_mode = "on"` -> full adaptive verification/recovery/finisher behavior
+
+Operationally, watch these signals during rollout:
+
+- `orchd state --json` -> `scheduler`, `finisher`, and per-task recovery/review metadata
+- `orchd fleet status` / `orchd fleet brief` -> project-wide finisher state and last scheduler action
+- TUI stats/detail panels -> selected-task routing, verification, recovery, review, and merge-gate state
 
 ## 16) Judgment Margin
 

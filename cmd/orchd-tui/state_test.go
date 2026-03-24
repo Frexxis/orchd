@@ -93,8 +93,27 @@ func TestStateJSONUnmarshalIncludesNeedsInput(t *testing.T) {
 		"worktree_dir": ".worktrees",
 		"worker_runner": "codex",
 		"max_parallel": 3,
-		"counts": {"total":1,"pending":0,"running":0,"done":0,"merged":0,"failed":0,"conflict":0,"needs_input":1},
+		"counts": {"total":1,"pending":0,"running":0,"done":0,"merged":0,"split":0,"failed":0,"conflict":0,"needs_input":1},
 		"ready": {"spawn":0,"check":0,"merge":0},
+		"finisher": {"state":"next_phase_available","reason":"follow-on work exists","updated_at":"2026-03-24T00:00:00Z"},
+		"scheduler": {
+			"last_action": "merge",
+			"last_reason": "merge-ready work exists",
+			"updated_at": "2026-03-24T00:00:00Z",
+			"autopilot": {"action":"merge","reason":"merge-ready work exists","updated_at":"2026-03-24T00:00:00Z"},
+			"orchestrate": {"action":"check","reason":"completed worker sessions need checking","updated_at":"2026-03-24T00:01:00Z"}
+		},
+		"orchestrator": {
+			"route_role": "architect",
+			"selected_runner": "claude",
+			"route_reason": "using preferred runner claude for role architect",
+			"route_fallback_used": false,
+			"session_mode": "sticky",
+			"last_result": "CONTINUE",
+			"last_reason": "keep going",
+			"last_idle_decision": "reminder_sent",
+			"last_reminder_reason": "system reminder"
+		},
 		"tasks": [{
 			"id": "t1",
 			"title": "Need decision",
@@ -105,6 +124,13 @@ func TestStateJSONUnmarshalIncludesNeedsInput(t *testing.T) {
 			"branch": "agent-t1",
 			"worktree": "/tmp/demo/.worktrees/agent-t1",
 			"runner": "codex",
+			"routing_role": "builder",
+			"selected_runner": "codex",
+			"routing_default_runner": "codex",
+			"routing_candidates": "codex,claude",
+			"routing_fallback_used": false,
+			"routing_fallback_count": 1,
+			"routing_reason": "using preferred runner codex for role builder",
 			"session": "orchd-agent-t1",
 			"session_state": "stale",
 			"agent_alive": false,
@@ -112,6 +138,24 @@ func TestStateJSONUnmarshalIncludesNeedsInput(t *testing.T) {
 			"checked_at": "",
 			"merged_at": "",
 			"last_failure_reason": "",
+			"verification_tier": "targeted",
+			"verification_reason": "medium risk defaults to targeted",
+			"failure_class": "needs_input",
+			"failure_summary": "Need decision",
+			"failure_streak": 2,
+			"recovery_policy": "needs_input",
+			"recovery_next_action": "ask_user",
+			"recovery_policy_reason": "blocked on product decision",
+			"review_status": "",
+			"review_reason": "",
+			"review_required": true,
+			"reviewed_at": "",
+			"review_runner": "",
+			"review_output_file": "",
+			"merge_gate_status": "blocked",
+			"merge_gate_reason": "needs approved review",
+			"merge_required_verification_tier": "full",
+			"split_children": "child-a,child-b",
 			"log_file": "/tmp/demo/.orchd/logs/t1.jsonl",
 			"needs_input": {
 				"source": "json",
@@ -145,6 +189,18 @@ func TestStateJSONUnmarshalIncludesNeedsInput(t *testing.T) {
 	}
 	if task.NeedsInput.Code != "decision_required" {
 		t.Fatalf("needs_input code=%q want decision_required", task.NeedsInput.Code)
+	}
+	if st.Scheduler.LastAction != "merge" {
+		t.Fatalf("scheduler last action=%q want merge", st.Scheduler.LastAction)
+	}
+	if st.Finisher.State != "next_phase_available" {
+		t.Fatalf("finisher state=%q want next_phase_available", st.Finisher.State)
+	}
+	if !task.ReviewRequired {
+		t.Fatalf("review_required should be true")
+	}
+	if task.SplitChildren != "child-a,child-b" {
+		t.Fatalf("split children=%q want child-a,child-b", task.SplitChildren)
 	}
 }
 

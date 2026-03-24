@@ -47,6 +47,17 @@ STATUS: GO
 
 {execution_mode_instructions}
 
+## Task Metadata
+
+- size: {task_size}
+- risk: {task_risk}
+- blast_radius: {task_blast_radius}
+- file_hints: {task_file_hints}
+- recommended_verification: {task_recommended_verification}
+
+- Use this metadata to bias your approach toward throughput and safe scope control.
+- Prefer verification evidence that matches `recommended_verification` unless the repo's actual risk clearly requires more.
+
 ## Rules
 
 - Work ONLY within your worktree: {worktree_path}

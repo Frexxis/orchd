@@ -23,6 +23,61 @@ cmd_merge() {
 	fi
 }
 
+_merge_try_auto_review() {
+	local task_id=$1
+	MERGE_AUTO_REVIEW_REASON=""
+
+	if ! is_truthy "$(config_get "swarm.policy.auto_review" "true")"; then
+		MERGE_AUTO_REVIEW_REASON="auto review disabled by swarm.policy.auto_review"
+		return 1
+	fi
+
+	local review_status actual_tier actual_rank reviewer_runner
+	review_status=$(printf '%s' "$(task_get "$task_id" "review_status" "")" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	case "$review_status" in
+	approved)
+		MERGE_AUTO_REVIEW_REASON="approved review already present"
+		return 0
+		;;
+	changes_requested)
+		MERGE_AUTO_REVIEW_REASON="existing review already requested changes"
+		return 1
+		;;
+	esac
+
+	actual_tier=$(printf '%s' "$(task_get "$task_id" "verification_tier" "")" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	actual_rank=$(verify_tier_rank "$actual_tier")
+	if ((actual_rank < 2)); then
+		MERGE_AUTO_REVIEW_REASON="verification tier ${actual_tier:-none} is too low for review override"
+		return 1
+	fi
+
+	reviewer_runner=$(swarm_select_runner_for_role "reviewer" "$(detect_runner)")
+	if [[ -z "$reviewer_runner" || "$reviewer_runner" == "none" ]]; then
+		MERGE_AUTO_REVIEW_REASON="no reviewer runner available"
+		return 1
+	fi
+
+	task_set "$task_id" "review_requested_at" "$(now_iso)"
+	task_set "$task_id" "review_auto_triggered" "true"
+	printf 'task requires review before merge: %s — running reviewer (%s)...\n' "$task_id" "$reviewer_runner"
+	if _review_run "" "$task_id" >/dev/null 2>&1; then
+		review_status=$(printf '%s' "$(task_get "$task_id" "review_status" "")" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+		if [[ "$review_status" == "approved" ]]; then
+			MERGE_AUTO_REVIEW_REASON="auto review approved the task"
+			log_event "INFO" "merge: auto review approved $task_id"
+			return 0
+		fi
+		MERGE_AUTO_REVIEW_REASON="auto review did not approve the task"
+		log_event "WARN" "merge: auto review did not approve $task_id"
+		return 1
+	fi
+
+	MERGE_AUTO_REVIEW_REASON="review command failed"
+	log_event "WARN" "merge: auto review failed for $task_id"
+	return 1
+}
+
 _merge_single() {
 	local task_id=$1
 
@@ -39,6 +94,28 @@ _merge_single() {
 
 	if [[ "$status" != "done" ]] && [[ "$status" != "conflict" ]]; then
 		die "task not ready for merge (status: $status). Run: orchd check $task_id"
+	fi
+
+	if [[ "$status" == "done" ]]; then
+		if ! verify_merge_accepts_task "$task_id"; then
+			if [[ "${VERIFY_MERGE_REVIEW_REQUIRED:-false}" == "true" ]]; then
+				_merge_try_auto_review "$task_id" || true
+				verify_merge_accepts_task "$task_id" || true
+			fi
+		fi
+		if ! verify_merge_accepts_task "$task_id"; then
+			local merge_gate_reason="$VERIFY_MERGE_REASON"
+			if [[ -n "${MERGE_AUTO_REVIEW_REASON:-}" ]]; then
+				merge_gate_reason+="; ${MERGE_AUTO_REVIEW_REASON}"
+			fi
+			task_set "$task_id" "merge_gate_status" "blocked"
+			task_set "$task_id" "merge_gate_reason" "$merge_gate_reason"
+			task_set "$task_id" "merge_required_verification_tier" "$VERIFY_MERGE_REQUIRED_TIER"
+			die "task not ready for merge: $merge_gate_reason"
+		fi
+		task_set "$task_id" "merge_gate_status" "ready"
+		task_set "$task_id" "merge_gate_reason" "$VERIFY_MERGE_REASON"
+		task_set "$task_id" "merge_required_verification_tier" "$VERIFY_MERGE_REQUIRED_TIER"
 	fi
 
 	# Verify all dependencies are merged
