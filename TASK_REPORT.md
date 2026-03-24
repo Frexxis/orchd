@@ -107,3 +107,36 @@ Rollback note
 Risks/notes
 
 - The new review regression test exercises the built-in `claude` path as the proxy for built-in runner cwd behavior; the same worktree fix was applied to `codex`, `opencode`, and `aider`.
+
+---
+
+Incremental update: README onboarding polish and v2 release notes
+
+Summary of changes
+
+- Simplified the top of `README.md` so new users see a shorter install -> init -> plan -> finish path first.
+- Added a clearer "Before You Start", "Simple Mental Model", and "Typical First Run" onboarding flow so advanced orchestration concepts are no longer the first thing a new user has to parse.
+- Added `docs/releases/2026-03-24-orchd-v2.md` with release highlights, a GitHub release body, and short/long announcement copy for sharing orchd v2.
+
+Files modified/created
+
+- `README.md`
+- `docs/releases/2026-03-24-orchd-v2.md`
+- `TASK_REPORT.md`
+
+Evidence
+
+EVIDENCE:
+- CMD: bash tests/smoke.sh
+  RESULT: PASS
+  OUTPUT: 199 passed, 0 failed, 199 total.
+
+Rollback note
+
+- Trigger rollback if the simplified README misrepresents the recommended workflow, if new users are pushed toward an incomplete happy path, or if the release-note copy diverges from shipped v2 behavior.
+- How to revert: revert the commit containing the onboarding/release-notes update, then rerun `bash tests/smoke.sh`.
+
+Risks/notes
+
+- This wave is docs-only; it changes onboarding and release communication, not runtime behavior.
+- The install story is still source-first; packaging remains a follow-on improvement even with a much clearer first-run path.

@@ -36,29 +36,109 @@ Or use the rich terminal UI:
 orchd tui
 ```
 
-## Quick Start
+## 5-Minute Setup
 
 ```bash
-# Install
+# 1) Install orchd
 git clone https://github.com/Frexxis/orchd.git
 cd orchd && chmod +x bin/orchd
 mkdir -p ~/.local/bin && ln -sf "$PWD/bin/orchd" ~/.local/bin/orchd
 
-# Initialize in your project
+# 2) Go to your project
+cd /path/to/your/project
+
+# 3) Initialize orchd once
+orchd init .
+
+# 4) Tell orchd what you want
+orchd plan "build a REST API with auth, tests, and CI"
+
+# 5) Let it finish the project slice
+orchd finish
+```
+
+That is the recommended path for most people.
+
+What `finish` does:
+
+- spawns ready tasks
+- runs adaptive quality checks
+- merges safe completed work
+- retries or splits failing work when possible
+- keeps ideating follow-on tasks until the project is actually blocked or complete
+
+## Before You Start
+
+You need:
+
+- `git`
+- `tmux`
+- at least one supported AI CLI installed and authenticated: `codex`, `claude`, `opencode`, `aider`, or a custom runner command
+
+Optional but helpful:
+
+- project-specific `lint`, `test`, and `build` commands in `.orchd.toml`
+- a memory brief in `docs/memory/projectbrief.md`
+
+## The Simple Mental Model
+
+If you are new to orchd, only learn these commands first:
+
+```bash
+orchd init .
+orchd doctor
+orchd plan "your goal here"
+orchd finish
+orchd board --watch
+```
+
+You can ignore the rest until you need them.
+
+## A Typical First Run
+
+```bash
 cd /path/to/your/project
 orchd init .
 
-# Plan → Autopilot (fully autonomous)
-orchd plan "build a REST API with auth, tests, and CI"
-orchd autopilot
+# optional: edit .orchd.toml and set lint/test/build commands
+orchd doctor
 
-# Or step-by-step:
+orchd plan "close the highest-impact bugs and add missing tests"
+orchd board --watch
+```
+
+In a second terminal:
+
+```bash
+orchd finish
+```
+
+If you prefer background execution:
+
+```bash
+orchd finish --daemon 30
+orchd finish --status
+orchd finish --logs
+```
+
+## Step-by-Step Mode
+
+If you want more control, orchd still works as a manual pipeline:
+
+```bash
 orchd plan "build a REST API with auth, tests, and CI"
 orchd spawn --all
 orchd board --watch
 orchd check --all
 orchd merge --all
 ```
+
+## Why Two Main Modes?
+
+- `orchd finish`: recommended for most users; it is the throughput-first project-finisher loop
+- step-by-step commands: useful when you want manual control over each stage
+
+Advanced commands like `orchestrate`, `autopilot`, `fleet`, `review`, and `ideate` are still available, but you do not need them for your first successful run.
 
 ## Architecture
 
