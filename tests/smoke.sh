@@ -539,6 +539,16 @@ assert_exit_0 "board in init dir" run_in_dir "$INIT_DIR" "$ORCHD" board
 printf '\n[9] Utility commands (in initialized project)\n'
 assert_exit_0 "doctor in init dir" run_in_dir "$INIT_DIR" "$ORCHD" doctor
 assert_exit_0 "refresh-docs in init dir" run_in_dir "$INIT_DIR" "$ORCHD" refresh-docs
+assert_output_contains "agent-prompt works in init dir" 'Use `orchd` as the orchestration system' run_in_dir "$INIT_DIR" "$ORCHD" agent-prompt orchestrator "ship the next release"
+
+AGENT_PROMPT_DIR="$TMPDIR/agent-prompt-raw"
+mkdir -p "$AGENT_PROMPT_DIR"
+run_in_dir "$AGENT_PROMPT_DIR" git init -q
+run_in_dir "$AGENT_PROMPT_DIR" git config user.name "orchd-test"
+run_in_dir "$AGENT_PROMPT_DIR" git config user.email "test@example.com"
+run_in_dir "$AGENT_PROMPT_DIR" git commit --allow-empty -q -m "init"
+assert_output_contains "agent-prompt suggests init before orchd setup" 'orchd init .' run_in_dir "$AGENT_PROMPT_DIR" "$ORCHD" agent-prompt orchestrator "bootstrap this repo"
+assert_output_contains "agent-prompt includes user goal" 'bootstrap this repo' run_in_dir "$AGENT_PROMPT_DIR" "$ORCHD" agent-prompt orchestrator "bootstrap this repo"
 
 printf '\n[9b] Python auto-detect prefers venv bins\n'
 mkdir -p "$INIT_DIR/.venv/bin"
@@ -574,8 +584,10 @@ assert_output_contains "help shows merge" "merge" "$ORCHD" --help
 assert_output_contains "help shows resume" "resume" "$ORCHD" --help
 assert_output_contains "help shows autopilot" "autopilot" "$ORCHD" --help
 assert_output_contains "help shows finish" "finish" "$ORCHD" --help
+assert_output_contains "help shows agent-prompt" "agent-prompt" "$ORCHD" --help
 assert_output_contains "help shows doctor" "doctor" "$ORCHD" --help
 assert_output_contains "help shows refresh-docs" "refresh-docs" "$ORCHD" --help
+assert_output_contains "agent-prompt help works" "copy-paste prompt" "$ORCHD" agent-prompt --help
 assert_exit_0 "finish help works" run_in_dir "$INIT_DIR" "$ORCHD" finish --help
 assert_exit_nonzero "finish status reports not running by default" run_in_dir "$INIT_DIR" "$ORCHD" finish --status
 
@@ -1301,7 +1313,9 @@ assert_output_contains "ideate records next-phase finisher state" "next_phase_av
 printf '\n[20b] Swarm rollout docs\n'
 assert_output_contains "README documents swarm_mode rollout" "swarm_mode" cat "$REPO_ROOT/README.md"
 assert_output_contains "README documents auto_review policy" "auto_review" cat "$REPO_ROOT/README.md"
+assert_output_contains "README documents agent-first workflow" "agent-prompt orchestrator" cat "$REPO_ROOT/README.md"
 assert_output_contains "ORCHESTRATOR docs mention finish" "orchd finish" cat "$REPO_ROOT/ORCHESTRATOR.md"
+assert_output_contains "ORCHESTRATOR docs mention agent-first handoff" "agent-prompt orchestrator" cat "$REPO_ROOT/ORCHESTRATOR.md"
 assert_output_contains "runbook documents observe rollout" "observe" cat "$REPO_ROOT/orchestrator-runbook.md"
 
 printf '\n[21] Claude resume-session orchestrator\n'

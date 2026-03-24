@@ -9,6 +9,28 @@ orchd takes a high-level project description, breaks it into a dependency graph 
 
 Why orchd? Modern AI coding tools are powerful but single-session. orchd turns multiple agent sessions into a coordinated delivery pipeline: parallel worktrees, DAG-ordered merges, retries, and a shared project memory so agents learn from each other.
 
+Most users will not type every orchd command themselves. The primary workflow is agent-first: open your preferred coding agent, assign it the orchestrator role, and have it drive the repo through orchd.
+
+## Agent-First Workflow
+
+If you use OpenCode, Claude, Codex, or another coding agent as the operator, start here:
+
+```bash
+cd /path/to/your/project
+orchd agent-prompt orchestrator "close the highest-impact bugs and get this repo release-ready"
+```
+
+Then paste the printed prompt into your agent.
+
+That prompt tells the agent to:
+
+- read the local orchd docs
+- initialize orchd if needed
+- inspect current repo state
+- plan only when necessary
+- prefer `orchd finish` for the main execution loop
+- keep the human out of the mechanical spawn/check/merge cycle
+
 ## How It Works
 
 ```
@@ -57,7 +79,15 @@ orchd plan "build a REST API with auth, tests, and CI"
 orchd finish
 ```
 
-That is the recommended path for most people.
+That is the recommended path for direct CLI users.
+
+If you are using an external coding agent as the operator, the equivalent path is:
+
+```bash
+orchd agent-prompt orchestrator "your goal here"
+```
+
+...then paste that output into the agent and let it run orchd for you.
 
 What `finish` does:
 
@@ -85,6 +115,7 @@ Optional but helpful:
 If you are new to orchd, only learn these commands first:
 
 ```bash
+orchd agent-prompt orchestrator "your goal here"
 orchd init .
 orchd doctor
 orchd plan "your goal here"
@@ -93,6 +124,8 @@ orchd board --watch
 ```
 
 You can ignore the rest until you need them.
+
+For most real users, the first line is the most important one.
 
 ## A Typical First Run
 
@@ -193,6 +226,10 @@ Advanced commands like `orchestrate`, `autopilot`, `fleet`, `review`, and `ideat
 | `orchd autopilot --daemon [poll_seconds]` | Run autopilot in background |
 | `orchd autopilot --daemon --continuous` | Background + continuous ideation (deterministic mode) |
 | `orchd autopilot --status\|--stop\|--logs` | Manage the autopilot daemon |
+| `orchd finish [poll_seconds]` | Throughput-first project-finisher loop |
+| `orchd finish --daemon [poll_seconds]` | Run finisher loop in background |
+| `orchd finish --status\|--stop\|--logs` | Manage the finisher daemon |
+| `orchd agent-prompt [role] [goal...]` | Print a copy-paste prompt for an external orchestrator/worker/reviewer agent |
 
 ### Memory Bank
 

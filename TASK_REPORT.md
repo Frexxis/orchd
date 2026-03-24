@@ -140,3 +140,46 @@ Risks/notes
 
 - This wave is docs-only; it changes onboarding and release communication, not runtime behavior.
 - The install story is still source-first; packaging remains a follow-on improvement even with a much clearer first-run path.
+
+---
+
+Incremental update: agent-first orchestration onboarding
+
+Summary of changes
+
+- Added `orchd agent-prompt` so users can generate a copy-paste orchestrator/worker/reviewer prompt for an external coding agent instead of manually driving the CLI.
+- Repositioned the top of `README.md` around the real primary flow: open an external agent, paste the orchestrator prompt, and let that agent use orchd.
+- Updated `ORCHESTRATOR.md` and the v2 release note doc so generated/refreshable orchd docs now explicitly describe the agent-first handoff model.
+- Added smoke coverage for raw-repo and initialized-repo `agent-prompt` usage plus help/docs visibility.
+
+Files modified/created
+
+- `bin/orchd`
+- `lib/cmd/agent_prompt.sh`
+- `README.md`
+- `ORCHESTRATOR.md`
+- `docs/releases/2026-03-24-orchd-v2.md`
+- `tests/smoke.sh`
+- `TASK_REPORT.md`
+
+Evidence
+
+EVIDENCE:
+- CMD: bash -n bin/orchd lib/cmd/agent_prompt.sh tests/smoke.sh
+  RESULT: PASS
+  OUTPUT: Shell syntax check passed for the new agent-prompt command and updated smoke coverage.
+
+EVIDENCE:
+- CMD: bash tests/smoke.sh
+  RESULT: PASS
+  OUTPUT: 206 passed, 0 failed, 206 total.
+
+Rollback note
+
+- Trigger rollback if `orchd agent-prompt` generates misleading handoff text, if the README over-rotates toward agent-mediated usage and hides the direct CLI path too much, or if help/docs regressions make command discovery worse.
+- How to revert: revert the commit containing the agent-first onboarding wave, then rerun `bash tests/smoke.sh`.
+
+Risks/notes
+
+- This wave improves onboarding and the agent handoff surface, but does not yet add a single-command runtime wrapper like `orchd run "goal"`.
+- The primary workflow is now documented as agent-first, while the direct CLI path remains available for power users and debugging.

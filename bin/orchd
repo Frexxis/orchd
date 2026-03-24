@@ -54,6 +54,8 @@ source "$ORCHD_LIB_DIR/cmd/check.sh"
 source "$ORCHD_LIB_DIR/cmd/merge.sh"
 # shellcheck source=../lib/cmd/doctor.sh
 source "$ORCHD_LIB_DIR/cmd/doctor.sh"
+# shellcheck source=../lib/cmd/agent_prompt.sh
+source "$ORCHD_LIB_DIR/cmd/agent_prompt.sh"
 # shellcheck source=../lib/cmd/refresh_docs.sh
 source "$ORCHD_LIB_DIR/cmd/refresh_docs.sh"
 # shellcheck source=../lib/cmd/resume.sh
@@ -114,6 +116,7 @@ Orchestration commands:
   orchd finish --status                 Show active finisher daemon status
   orchd finish --stop                   Stop active finisher daemon
   orchd finish --logs                   Tail active finisher daemon log
+  orchd agent-prompt [role] [goal...]   Print a copy-paste prompt for an external agent
   orchd doctor [dir]                   Show effective config and auto-detect
   orchd refresh-docs [dir]             Refresh AGENTS/WORKER/ORCHESTRATOR/CLAUDE/OPENCODE/runbook docs
 
@@ -156,9 +159,11 @@ Environment:
   ORCHD_STATE_DIR      Monitor state dir (default: $HOME/.orchd)
 
 Workflow:
+  orchd agent-prompt orchestrator "build a REST API with auth, tests, and CI"
+  # paste that into your coding agent, or run manually:
   orchd init .
   orchd plan "build a REST API with auth, tests, and CI"
-  orchd autopilot                        # fully autonomous
+  orchd finish                           # recommended project-finisher path
   # or step-by-step:
   orchd spawn --all
   orchd board --watch
@@ -332,6 +337,9 @@ case "$cmd" in
     ;;
   doctor)
     cmd_doctor "$@"
+    ;;
+  agent-prompt|agent_prompt|prompt)
+    cmd_agent_prompt "$@"
     ;;
   refresh-docs|refresh_docs)
     cmd_refresh_docs "$@"

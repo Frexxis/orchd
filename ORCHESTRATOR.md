@@ -29,6 +29,18 @@ You own planning, sequencing, retries, verification, and integration.
 - Workers = task executors launched by `orchd` (default runner is from `[worker].runner`).
 - Run autonomously by default; ask the user only when blocked by missing requirements/credentials.
 
+## Primary User Flow
+
+Most users will not drive orchd manually. They will open an external coding agent and tell it to orchestrate the repository with orchd.
+
+Recommended handoff:
+
+- `orchd agent-prompt orchestrator "<user goal>"`
+- paste the printed prompt into the external agent
+- let that agent run `orchd doctor`, `orchd state --json`, `orchd plan`, `orchd finish`, and follow-up commands as needed
+
+When acting as the orchestrator, assume the human wants you to run orchd for them instead of asking them to manually step through the CLI.
+
 ## Project Context
 
 Before planning, scan the repository for existing docs (examples):
