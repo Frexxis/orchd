@@ -3,17 +3,94 @@
 # Quality gate: lint, test, build, task report verification
 
 cmd_check() {
-	local target="${1:-}"
+	local target=""
+	local profile_override=""
+
+	while (($# > 0)); do
+		case "$1" in
+		--profile)
+			shift
+			profile_override="${1:-}"
+			[[ -n "$profile_override" ]] || die "usage: orchd check [--profile <quick|standard|strict>] <task-id|--all>"
+			shift
+			;;
+		-h | --help)
+			printf 'usage: orchd check [--profile <quick|standard|strict>] <task-id|--all>\n'
+			return 0
+			;;
+		*)
+			if [[ -z "$target" ]]; then
+				target="$1"
+				shift
+			else
+				die "usage: orchd check [--profile <quick|standard|strict>] <task-id|--all>"
+			fi
+			;;
+		esac
+	done
 
 	require_project
+
+	ORCHD_CHECK_PROFILE=$(_quality_profile_resolve "$profile_override")
 
 	if [[ "$target" == "--all" ]]; then
 		_check_all
 	elif [[ -n "$target" ]]; then
 		_check_single "$target"
 	else
-		die "usage: orchd check <task-id> | orchd check --all"
+		die "usage: orchd check [--profile <quick|standard|strict>] <task-id|--all>"
 	fi
+}
+
+_quality_profile_resolve() {
+	local override=${1:-}
+	local profile
+	if [[ -n "$override" ]]; then
+		profile="$override"
+	else
+		profile=$(config_get "quality.profile" "standard")
+	fi
+	profile=$(printf '%s' "$profile" | tr '[:upper:]' '[:lower:]')
+	case "$profile" in
+	quick | standard | strict)
+		printf '%s\n' "$profile"
+		;;
+	*)
+		printf 'standard\n'
+		;;
+	esac
+}
+
+_quality_profile_apply() {
+	local profile=$1
+	local lint_cmd=${2:-}
+	local test_cmd=${3:-}
+	local build_cmd=${4:-}
+
+	ORCHD_PROFILE_LINT_CMD="$lint_cmd"
+	ORCHD_PROFILE_TEST_CMD="$test_cmd"
+	ORCHD_PROFILE_BUILD_CMD="$build_cmd"
+	ORCHD_PROFILE_REQUIRE_FULL=0
+
+	case "$profile" in
+	quick)
+		ORCHD_PROFILE_BUILD_CMD=""
+		;;
+	strict)
+		ORCHD_PROFILE_REQUIRE_FULL=1
+		;;
+	esac
+}
+
+_quality_profile_missing_count() {
+	local lint_cmd=${1:-}
+	local test_cmd=${2:-}
+	local build_cmd=${3:-}
+	local missing=0
+	[[ -z "$lint_cmd" ]] && missing=$((missing + 1))
+	[[ -z "$test_cmd" ]] && missing=$((missing + 1))
+	[[ -z "$build_cmd" ]] && missing=$((missing + 1))
+	printf '%s\n' "$missing"
 }
 
 _check_single() {
@@ -163,8 +240,18 @@ PY
 	local skipped=0
 	local total=0
 	local needs_input=false
+	local failure_class=""
+
+	_mark_failure_class() {
+		local cls=${1:-quality_gate}
+		if [[ -z "$failure_class" ]]; then
+			failure_class="$cls"
+		fi
+	}
+
 	if [[ -f "$worktree/.orchd_needs_input.md" ]]; then
 		needs_input=true
+		_mark_failure_class "needs_input"
 		total=$((total + 1))
 		_check_printf '  [FAIL] needs user input (.orchd_needs_input.md present)\n'
 		failed=$((failed + 1))
@@ -172,6 +259,7 @@ PY
 	# Backward compatibility: treat BLOCKER.md as needs_input as well.
 	if [[ -f "$worktree/BLOCKER.md" ]]; then
 		needs_input=true
+		_mark_failure_class "needs_input"
 		total=$((total + 1))
 		_check_printf '  [FAIL] blocked (BLOCKER.md present; use .orchd_needs_input.md going forward)\n'
 		failed=$((failed + 1))
@@ -188,6 +276,9 @@ PY
 	if $needs_input; then
 		task_set "$task_id" "status" "needs_input"
 		task_set "$task_id" "needs_input_at" "$(now_iso)"
+		task_set "$task_id" "failure_class" "needs_input"
+		task_set "$task_id" "last_failure_reason" "needs_input"
+		metrics_emit "check.completed" "$task_id" "needs_input" "0" '{"failure_class":"needs_input"}'
 		if $agent_alive; then
 			runner_stop "$task_id"
 			agent_alive=false
@@ -214,12 +305,14 @@ PY
 		exit_code=$(runner_exit_code "$task_id" || true)
 		if [[ -z "$exit_code" ]]; then
 			_check_printf '  [FAIL] agent exit status unknown (missing ORCHD_EXIT marker)\n'
+			_mark_failure_class "infra_flake"
 			failed=$((failed + 1))
 		elif [[ "$exit_code" == "0" ]]; then
 			_check_printf '  [PASS] agent session completed (exit=0)\n'
 			passed=$((passed + 1))
 		else
 			_check_printf '  [FAIL] agent session failed (exit=%s)\n' "$exit_code"
+			_mark_failure_class "infra_flake"
 			failed=$((failed + 1))
 		fi
 		task_set "$task_id" "agent_exit_code" "${exit_code:-unknown}"
@@ -261,10 +354,12 @@ PY
 		else
 			_check_printf '  [FAIL] TASK_REPORT.md incomplete (missing evidence and/or rollback note)\n'
 			_check_printf '         expected: EVIDENCE + - CMD + RESULT + OUTPUT, and a rollback note\n'
+			_mark_failure_class "needs_input"
 			failed=$((failed + 1))
 		fi
 	else
 		_check_printf '  [FAIL] TASK_REPORT.md not found\n'
+		_mark_failure_class "needs_input"
 		failed=$((failed + 1))
 	fi
 
@@ -283,6 +378,7 @@ PY
 		passed=$((passed + 1))
 	else
 		_check_printf '  [FAIL] no commits on branch %s\n' "$branch"
+		_mark_failure_class "needs_input"
 		failed=$((failed + 1))
 	fi
 
@@ -324,6 +420,24 @@ PY
 		_check_printf '  [INFO] task-specific quality commands enabled\n'
 	fi
 
+	local quality_profile="${ORCHD_CHECK_PROFILE:-$(_quality_profile_resolve "")}"
+	_quality_profile_apply "$quality_profile" "$lint_cmd" "$test_cmd" "$build_cmd"
+	lint_cmd="$ORCHD_PROFILE_LINT_CMD"
+	test_cmd="$ORCHD_PROFILE_TEST_CMD"
+	build_cmd="$ORCHD_PROFILE_BUILD_CMD"
+	_check_printf '  [INFO] quality profile: %s\n' "$quality_profile"
+
+	if ((ORCHD_PROFILE_REQUIRE_FULL == 1)); then
+		local strict_missing
+		strict_missing=$(_quality_profile_missing_count "$lint_cmd" "$test_cmd" "$build_cmd")
+		if ((strict_missing > 0)); then
+			total=$((total + 1))
+			_check_printf '  [FAIL] strict profile requires lint+test+build commands\n'
+			_mark_failure_class "needs_input"
+			failed=$((failed + 1))
+		fi
+	fi
+
 	if $auto_detect_used; then
 		if [[ -n "$ORCHD_DETECTED_STACK" ]]; then
 			_check_printf '  [INFO] auto-detected stack: %s\n' "$ORCHD_DETECTED_STACK"
@@ -357,6 +471,7 @@ PY
 			_check_printf '  [FAIL] lint failed\n'
 			_check_printf '         --- output (last 200 lines) ---\n'
 			_check_printf '%s\n' "$(tail -n 200 "$ORCHD_QUALITY_TMP" 2>/dev/null || true)"
+			_mark_failure_class "lint_failure"
 			failed=$((failed + 1))
 		fi
 		rm -f "$ORCHD_QUALITY_TMP" 2>/dev/null || true
@@ -367,6 +482,7 @@ PY
 		total=$((total + 1))
 		_check_printf '  [RUN]  test: %s\n' "$test_cmd"
 		if ! _validate_test_cmd_paths "$test_cmd"; then
+			_mark_failure_class "test_failure"
 			failed=$((failed + 1))
 		elif _quality_exec "test" "$test_cmd"; then
 			_check_printf '  [PASS] tests passed\n'
@@ -375,6 +491,7 @@ PY
 			_check_printf '  [FAIL] tests failed\n'
 			_check_printf '         --- output (last 200 lines) ---\n'
 			_check_printf '%s\n' "$(tail -n 200 "$ORCHD_QUALITY_TMP" 2>/dev/null || true)"
+			_mark_failure_class "test_failure"
 			failed=$((failed + 1))
 		fi
 		rm -f "$ORCHD_QUALITY_TMP" 2>/dev/null || true
@@ -391,6 +508,7 @@ PY
 			_check_printf '  [FAIL] build failed\n'
 			_check_printf '         --- output (last 200 lines) ---\n'
 			_check_printf '%s\n' "$(tail -n 200 "$ORCHD_QUALITY_TMP" 2>/dev/null || true)"
+			_mark_failure_class "build_failure"
 			failed=$((failed + 1))
 		fi
 		rm -f "$ORCHD_QUALITY_TMP" 2>/dev/null || true
@@ -416,22 +534,33 @@ PY
 
 	if ((failed == 0)) && ! $agent_alive; then
 		task_set "$task_id" "status" "done"
+		task_set "$task_id" "failure_class" ""
+		metrics_emit "check.completed" "$task_id" "done" "0" '{}'
 		_check_printf '\n  task marked as DONE (ready for merge)\n'
 		log_event "INFO" "quality gate passed: $task_id ($passed/$total)"
 	else
 		if $agent_alive; then
+			metrics_emit "check.skipped" "$task_id" "running" "0" '{}'
 			_check_printf '\n  agent still running — check again later\n'
 		else
 			if $needs_input; then
 				task_set "$task_id" "status" "needs_input"
 				task_set "$task_id" "needs_input_at" "$(now_iso)"
+				task_set "$task_id" "failure_class" "needs_input"
+				task_set "$task_id" "last_failure_reason" "needs_input"
+				metrics_emit "check.completed" "$task_id" "needs_input" "0" '{"failure_class":"needs_input"}'
 				_check_printf '\n  task marked as NEEDS_INPUT (.orchd_needs_input.md)\n'
 				log_event "WARN" "needs input: $task_id"
 			else
 				task_set "$task_id" "status" "failed"
-				task_set "$task_id" "last_failure_reason" "quality_gate"
+				if [[ -z "$failure_class" ]]; then
+					failure_class="quality_gate"
+				fi
+				task_set "$task_id" "failure_class" "$failure_class"
+				task_set "$task_id" "last_failure_reason" "$failure_class"
+				metrics_emit "check.completed" "$task_id" "failed" "0" "{\"failure_class\":\"$(_metrics_json_escape "$failure_class")\"}"
 				_check_printf '\n  task marked as FAILED (quality gate failed)\n'
-				log_event "WARN" "quality gate failed: $task_id ($passed/$total, $failed failed)"
+				log_event "WARN" "quality gate failed: $task_id class=$failure_class ($passed/$total, $failed failed)"
 			fi
 		fi
 	fi

@@ -1157,7 +1157,7 @@ func (m *model) refreshStatsViewport() {
 	}
 
 	text := fmt.Sprintf(
-		"Overview\n\nTotal tasks:     %d\nMerged:          %d (%d%%)\nRunning:         %d\nPending:         %d\nDone:            %d\nFailed:          %d\nConflict:        %d\nNeeds input:     %d\n\nReady queue\n\nSpawnable:       %d\nCheckable:       %d\nMergeable:       %d\n\nRoles\n\n%s\n\nProject\n\nRoot:            %s\nBase branch:     %s\nRunner:          %s\nMax parallel:    %d\nAutopilot:       %s\n",
+		"Overview\n\nTotal tasks:     %d\nMerged:          %d (%d%%)\nRunning:         %d\nPending:         %d\nDone:            %d\nFailed:          %d\nConflict:        %d\nNeeds input:     %d\n\nReady queue\n\nSpawnable:       %d\nCheckable:       %d\nMergeable:       %d\n\nThroughput KPI\n\nMerged/day:      %s\nCycle p50 (s):   %s\nCycle p90 (s):   %s\nFirst-pass %%:    %s\n\nRoles\n\n%s\n\nProject\n\nRoot:            %s\nBase branch:     %s\nRunner:          %s\nMax parallel:    %d\nAutopilot:       %s\n",
 		total,
 		merged,
 		progress,
@@ -1170,6 +1170,10 @@ func (m *model) refreshStatsViewport() {
 		m.state.Ready.Spawn,
 		m.state.Ready.Check,
 		m.state.Ready.Merge,
+		formatFloatStat(m.state.KPI.MergedTasksPerDay),
+		formatFloatStat(m.state.KPI.CycleTimeP50Seconds),
+		formatFloatStat(m.state.KPI.CycleTimeP90Seconds),
+		formatFloatStat(m.state.KPI.FirstPassCheckSuccessRate),
 		strings.Join(roleLines, "\n"),
 		emptyDash(m.state.ProjectRoot),
 		emptyDash(m.state.BaseBranch),
@@ -1215,6 +1219,13 @@ func emptyDash(v string) string {
 		return "-"
 	}
 	return v
+}
+
+func formatFloatStat(v float64) string {
+	if v == float64(int64(v)) {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return fmt.Sprintf("%.2f", v)
 }
 
 func clamp(v int, lo int, hi int) int {

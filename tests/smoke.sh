@@ -71,6 +71,23 @@ assert_output_contains() {
 	fi
 }
 
+assert_file_equals() {
+	local desc=$1
+	local file=$2
+	local expected=$3
+	if [[ ! -f "$file" ]]; then
+		fail "$desc (missing $file)"
+		return
+	fi
+	local actual
+	actual=$(<"$file")
+	if [[ "$actual" == "$expected" ]]; then
+		pass "$desc"
+	else
+		fail "$desc (expected '$expected', got '$actual')"
+	fi
+}
+
 run_in_dir() {
 	local dir=$1
 	shift
@@ -178,6 +195,7 @@ assert_exit_nonzero "stop without session fails" "$ORCHD" stop
 assert_exit_nonzero "status without session fails" "$ORCHD" status
 assert_exit_nonzero "unknown command fails" "$ORCHD" foobar
 assert_exit_0 "spawn --help exits 0" "$ORCHD" spawn --help
+assert_exit_0 "check --help exits 0" "$ORCHD" check --help
 
 printf '\n[3] List (no sessions)\n'
 assert_exit_0 "list exits 0" "$ORCHD" list
@@ -282,6 +300,9 @@ run_in_dir "$INIT_DIR" bash -c 'cat > .orchd/plan_in.txt <<"EOF"
 TASK: t1
 TITLE: Test overrides
 ROLE: domain
+SIZE: s
+RISK: low
+FILE_HINTS: lib/core.sh,lib/cmd/state.sh
 DEPS: none
 DESCRIPTION: do a thing
 ACCEPTANCE: done
@@ -292,6 +313,9 @@ EOF'
 assert_exit_0 "plan --file succeeds" run_in_dir "$INIT_DIR" "$ORCHD" plan --file .orchd/plan_in.txt
 assert_output_contains "task test_cmd stored" "echo test" cat "$INIT_DIR/.orchd/tasks/t1/test_cmd"
 assert_output_contains "task lint_cmd stored" "echo lint" cat "$INIT_DIR/.orchd/tasks/t1/lint_cmd"
+assert_file_equals "task size stored" "$INIT_DIR/.orchd/tasks/t1/size" "s"
+assert_file_equals "task risk stored" "$INIT_DIR/.orchd/tasks/t1/risk" "low"
+assert_file_equals "task file_hints stored" "$INIT_DIR/.orchd/tasks/t1/file_hints" "lib/core.sh,lib/cmd/state.sh"
 # Cleanup so later autopilot tests see only the tasks they create.
 rm -rf "$INIT_DIR/.orchd/tasks/t1" "$INIT_DIR/.orchd/plan_in.txt"
 
@@ -345,6 +369,47 @@ assert_exit_0 "board in init dir" run_in_dir "$INIT_DIR" "$ORCHD" board
 printf '\n[9] Utility commands (in initialized project)\n'
 assert_exit_0 "doctor in init dir" run_in_dir "$INIT_DIR" "$ORCHD" doctor
 assert_exit_0 "refresh-docs in init dir" run_in_dir "$INIT_DIR" "$ORCHD" refresh-docs
+assert_exit_0 "check --profile quick --all works" run_in_dir "$INIT_DIR" "$ORCHD" check --profile quick --all
+
+printf '\n[9c] State JSON includes KPI block\n'
+STATE_JSON=$(run_in_dir "$INIT_DIR" "$ORCHD" state --json 2>/dev/null || true)
+if printf '%s' "$STATE_JSON" | grep -q '"kpi"'; then
+	pass "state --json includes kpi object"
+else
+	fail "state --json includes kpi object"
+fi
+
+if printf '%s' "$STATE_JSON" | grep -q '"merged_tasks_per_day"'; then
+	pass "state --json includes merged_tasks_per_day"
+else
+	fail "state --json includes merged_tasks_per_day"
+fi
+
+if printf '%s' "$STATE_JSON" | grep -q '"cycle_time_p50_seconds"'; then
+	pass "state --json includes cycle_time_p50_seconds"
+else
+	fail "state --json includes cycle_time_p50_seconds"
+fi
+
+printf '\n[9d] Throughput docs and config references\n'
+ORCHD_ROOT=$(resolve_path "$(dirname "$ORCHD")/..")
+if grep -q 'throughput_mode' "$ORCHD_ROOT/README.md"; then
+	pass "README documents throughput_mode"
+else
+	fail "README documents throughput_mode"
+fi
+
+if grep -q 'check --profile' "$ORCHD_ROOT/README.md"; then
+	pass "README documents check profile"
+else
+	fail "README documents check profile"
+fi
+
+if [[ -f "$ORCHD_ROOT/docs/metrics.md" ]]; then
+	pass "docs/metrics.md exists"
+else
+	fail "docs/metrics.md exists"
+fi
 
 printf '\n[9b] Python auto-detect prefers venv bins\n'
 mkdir -p "$INIT_DIR/.venv/bin"

@@ -28,6 +28,8 @@ ORCHD_LIB_DIR="$(dirname "$SELF")/../lib"
 # --- Source libraries ---
 # shellcheck source=../lib/core.sh
 source "$ORCHD_LIB_DIR/core.sh"
+# shellcheck source=../lib/metrics.sh
+source "$ORCHD_LIB_DIR/metrics.sh"
 # shellcheck source=../lib/runner.sh
 source "$ORCHD_LIB_DIR/runner.sh"
 # shellcheck source=../lib/cmd/init.sh

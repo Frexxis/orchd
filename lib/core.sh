@@ -22,9 +22,32 @@ require_project() {
 	TASKS_DIR="$ORCHD_DIR/tasks"
 	LOGS_DIR="$ORCHD_DIR/logs"
 	mkdir -p "$TASKS_DIR" "$LOGS_DIR"
+	metrics_init
 }
 
 # --- Config parsing (.orchd.toml, minimal TOML subset) ---
+
+ORCHD_CACHE_TICK_ACTIVE=0
+ORCHD_TASK_IDS_TICK_CACHE_READY=0
+ORCHD_TASK_IDS_TICK_CACHE=""
+ORCHD_CFG_TICK_CACHE=""
+ORCHD_TASK_FIELD_TICK_CACHE=""
+
+cache_tick_begin() {
+	ORCHD_CACHE_TICK_ACTIVE=1
+	ORCHD_TASK_IDS_TICK_CACHE_READY=0
+	ORCHD_TASK_IDS_TICK_CACHE=""
+	ORCHD_CFG_TICK_CACHE=""
+	ORCHD_TASK_FIELD_TICK_CACHE=""
+}
+
+cache_tick_end() {
+	ORCHD_CACHE_TICK_ACTIVE=0
+	ORCHD_TASK_IDS_TICK_CACHE_READY=0
+	ORCHD_TASK_IDS_TICK_CACHE=""
+	ORCHD_CFG_TICK_CACHE=""
+	ORCHD_TASK_FIELD_TICK_CACHE=""
+}
 
 config_get() {
 	local key=$1
@@ -143,6 +166,39 @@ config_get_int() {
 	fi
 }
 
+config_get_cached() {
+	local key=$1
+	local default=${2:-}
+
+	if [[ "${ORCHD_CACHE_TICK_ACTIVE:-0}" != "1" ]]; then
+		local uncached
+		uncached=$(config_get "$key" "$default")
+		REPLY=$uncached
+		printf '%s\n' "$uncached"
+		return 0
+	fi
+
+	local cache_key
+	cache_key="$key|$default"
+	local line cache_k cache_v
+	while IFS= read -r line; do
+		[[ -z "$line" ]] && continue
+		cache_k=${line%%$'\t'*}
+		cache_v=${line#*$'\t'}
+		if [[ "$cache_k" == "$cache_key" ]]; then
+			REPLY=$cache_v
+			printf '%s\n' "$cache_v"
+			return 0
+		fi
+	done <<<"$ORCHD_CFG_TICK_CACHE"
+
+	local value
+	value=$(config_get "$key" "$default")
+	ORCHD_CFG_TICK_CACHE+="$cache_key"$'\t'"$value"$'\n'
+	REPLY=$value
+	printf '%s\n' "$value"
+}
+
 is_truthy() {
 	local v=${1:-}
 	local vl
@@ -157,6 +213,24 @@ is_truthy() {
 	*)
 		# Default to true for unknown values to keep behavior permissive.
 		return 0
+		;;
+	esac
+}
+
+orchd_throughput_mode() {
+	local mode
+	if [[ "${ORCHD_CACHE_TICK_ACTIVE:-0}" == "1" ]]; then
+		mode=$(config_get_cached "throughput_mode" "on")
+	else
+		mode=$(config_get "throughput_mode" "on")
+	fi
+	mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
+	case "$mode" in
+	off | observe | on)
+		printf '%s\n' "$mode"
+		;;
+	*)
+		printf 'on\n'
 		;;
 	esac
 }
@@ -176,6 +250,10 @@ task_set() {
 	dir=$(task_dir "$task_id")
 	mkdir -p "$dir"
 	printf '%s\n' "$value" >"$dir/$key"
+	if [[ "${ORCHD_CACHE_TICK_ACTIVE:-0}" == "1" ]]; then
+		ORCHD_TASK_FIELD_TICK_CACHE=""
+		ORCHD_TASK_IDS_TICK_CACHE_READY=0
+	fi
 }
 
 task_get() {
@@ -189,6 +267,35 @@ task_get() {
 	else
 		printf '%s\n' "$default"
 	fi
+}
+
+task_field_cached() {
+	local task_id=$1
+	local key=$2
+	local default=${3:-}
+
+	if [[ "${ORCHD_CACHE_TICK_ACTIVE:-0}" != "1" ]]; then
+		task_get "$task_id" "$key" "$default"
+		return 0
+	fi
+
+	local cache_key
+	cache_key="$task_id|$key|$default"
+	local line cache_k cache_v
+	while IFS= read -r line; do
+		[[ -z "$line" ]] && continue
+		cache_k=${line%%$'\t'*}
+		cache_v=${line#*$'\t'}
+		if [[ "$cache_k" == "$cache_key" ]]; then
+			printf '%s\n' "$cache_v"
+			return 0
+		fi
+	done <<<"$ORCHD_TASK_FIELD_TICK_CACHE"
+
+	local value
+	value=$(task_get "$task_id" "$key" "$default")
+	ORCHD_TASK_FIELD_TICK_CACHE+="$cache_key"$'\t'"$value"$'\n'
+	printf '%s\n' "$value"
 }
 
 task_exists() {
@@ -206,9 +313,73 @@ task_list_ids() {
 	fi
 }
 
+task_list_ids_cached() {
+	if [[ "${ORCHD_CACHE_TICK_ACTIVE:-0}" != "1" ]]; then
+		task_list_ids
+		return 0
+	fi
+
+	if [[ "${ORCHD_TASK_IDS_TICK_CACHE_READY:-0}" == "1" ]]; then
+		printf '%s\n' "$ORCHD_TASK_IDS_TICK_CACHE"
+		return 0
+	fi
+
+	ORCHD_TASK_IDS_TICK_CACHE=$(task_list_ids)
+	ORCHD_TASK_IDS_TICK_CACHE_READY=1
+	printf '%s\n' "$ORCHD_TASK_IDS_TICK_CACHE"
+}
+
 task_status() {
 	local task_id=$1
 	task_get "$task_id" "status" "pending"
+}
+
+task_score_ready() {
+	local task_id=$1
+	local score=0
+
+	local size
+	size=$(task_field_cached "$task_id" "size" "")
+	case "$size" in
+	xs) score=$((score + 5)) ;;
+	s) score=$((score + 4)) ;;
+	m) score=$((score + 2)) ;;
+	l) score=$((score + 0)) ;;
+	*) score=$((score + 2)) ;;
+	esac
+
+	local risk
+	risk=$(task_field_cached "$task_id" "risk" "")
+	case "$risk" in
+	low) score=$((score + 4)) ;;
+	med) score=$((score + 2)) ;;
+	high) score=$((score + 0)) ;;
+	*) score=$((score + 2)) ;;
+	esac
+
+	local deps
+	deps=$(task_field_cached "$task_id" "deps" "")
+	if [[ -z "$deps" ]]; then
+		score=$((score + 2))
+	fi
+
+	local role
+	role=$(task_field_cached "$task_id" "role" "")
+	if [[ "$role" == "quality" ]]; then
+		score=$((score + 1))
+	fi
+
+	local attempts
+	attempts=$(task_field_cached "$task_id" "attempts" "0")
+	if [[ "$attempts" =~ ^[0-9]+$ ]]; then
+		score=$((score - attempts))
+	fi
+
+	if ((score < 0)); then
+		score=0
+	fi
+
+	printf '%s\n' "$score"
 }
 
 task_is_ready() {

@@ -84,7 +84,8 @@ EOF
 
 	# Poll interval: arg > config > default 30s
 	if [[ -z "$poll_interval" ]]; then
-		poll_interval=$(config_get "autopilot_poll" "30")
+		config_get_cached "autopilot_poll" "30" >/dev/null
+		poll_interval=$REPLY
 	fi
 	if ! [[ "$poll_interval" =~ ^[0-9]+$ ]]; then
 		die "poll interval must be integer seconds: $poll_interval"
@@ -105,10 +106,11 @@ EOF
 	# Verify tasks exist
 	local task_count=0
 	local tid
+	cache_tick_begin
 	while IFS= read -r tid; do
 		[[ -z "$tid" ]] && continue
 		task_count=$((task_count + 1))
-	done <<<"$(task_list_ids)"
+	done <<<"$(task_list_ids_cached)"
 
 	# Allow queue-only autopilot startup: if there are no tasks yet, try
 	# planning from the idea queue first.
@@ -124,10 +126,11 @@ EOF
 			fi
 		fi
 		if _autopilot_drain_queue "$runner" "$poll_interval"; then
+			cache_tick_begin
 			while IFS= read -r tid; do
 				[[ -z "$tid" ]] && continue
 				task_count=$((task_count + 1))
-			done <<<"$(task_list_ids)"
+			done <<<"$(task_list_ids_cached)"
 		fi
 	fi
 
@@ -136,20 +139,24 @@ EOF
 	fi
 
 	log_event "INFO" "autopilot started (poll=${poll_interval}s runner=$runner tasks=$task_count)"
+	metrics_emit "autopilot.started" "" "running" "0" "{}"
 	printf 'autopilot started\n'
 	printf '  runner:   %s\n' "$runner"
 	printf '  tasks:    %d\n' "$task_count"
 	printf '  poll:     %ss\n' "$poll_interval"
-	printf '  max_parallel: %s\n\n' "$(config_get "max_parallel" "3")"
+	config_get_cached "max_parallel" "3" >/dev/null
+	printf '  max_parallel: %s\n\n' "$REPLY"
 
 	local iteration=0
 	local max_iterations
-	max_iterations=$(config_get "autopilot_max_iterations" "0")
+	config_get_cached "autopilot_max_iterations" "0" >/dev/null
+	max_iterations=$REPLY
 	if ! [[ "$max_iterations" =~ ^[0-9]+$ ]]; then
 		die "autopilot_max_iterations must be integer: $max_iterations"
 	fi
 
 	while true; do
+		cache_tick_begin
 		iteration=$((iteration + 1))
 		if ((max_iterations > 0)) && ((iteration > max_iterations)); then
 			printf 'autopilot reached iteration limit (%d), exiting\n' "$max_iterations"
@@ -173,7 +180,7 @@ EOF
 			conflict) conflict=$((conflict + 1)) ;;
 			needs_input) needs_input=$((needs_input + 1)) ;;
 			esac
-		done <<<"$(task_list_ids)"
+		done <<<"$(task_list_ids_cached)"
 
 		local ts
 		ts=$(now_iso)
@@ -250,7 +257,7 @@ EOF
 			conflict) conflict2=$((conflict2 + 1)) ;;
 			needs_input) needs2=$((needs2 + 1)) ;;
 			esac
-		done <<<"$(task_list_ids)"
+		done <<<"$(task_list_ids_cached)"
 		if ((total2 > 0)) && ((merged2 + conflict2 + needs2 >= total2)); then
 			# Check idea queue before exiting — continuous operation
 			if _autopilot_drain_queue "$runner" "$poll_interval"; then
@@ -378,7 +385,8 @@ _autopilot_start_daemon() {
 
 	# Poll interval: arg > config > default 30s
 	if [[ -z "$poll_interval" ]]; then
-		poll_interval=$(config_get "autopilot_poll" "30")
+		config_get_cached "autopilot_poll" "30" >/dev/null
+		poll_interval=$REPLY
 	fi
 	if ! [[ "$poll_interval" =~ ^[0-9]+$ ]]; then
 		die "poll interval must be integer seconds: $poll_interval"
@@ -483,24 +491,13 @@ _autopilot_check_finished() {
 			status=$(task_status "$task_id")
 			log_event "INFO" "autopilot: checked $task_id -> $status"
 		fi
-	done <<<"$(task_list_ids)"
+	done <<<"$(task_list_ids_cached)"
 }
 
 # --- Phase 2: retry failed tasks (safe, bounded) ---
 
 _autopilot_retry_failed() {
 	local runner=${1:-}
-	local retry_limit
-	retry_limit=$(config_get "autopilot_retry_limit" "2")
-	local base_backoff
-	base_backoff=$(config_get "autopilot_retry_backoff" "60")
-
-	if ! [[ "$retry_limit" =~ ^[0-9]+$ ]]; then
-		retry_limit=2
-	fi
-	if ! [[ "$base_backoff" =~ ^[0-9]+$ ]]; then
-		base_backoff=60
-	fi
 
 	local now_epoch
 	now_epoch=$(date +%s)
@@ -510,6 +507,30 @@ _autopilot_retry_failed() {
 		[[ -z "$task_id" ]] && continue
 		status=$(task_status "$task_id")
 		[[ "$status" == "failed" ]] || continue
+
+		local failure_class
+		failure_class=$(task_get "$task_id" "failure_class" "")
+		if [[ -z "$failure_class" ]]; then
+			failure_class=$(task_get "$task_id" "last_failure_reason" "quality_gate")
+		fi
+
+		local policy_limit policy_backoff policy_action
+		read -r policy_limit policy_backoff policy_action < <(_autopilot_retry_policy "$failure_class")
+
+		if [[ "$policy_action" == "needs_input" ]]; then
+			task_set "$task_id" "status" "needs_input"
+			task_set "$task_id" "needs_input_at" "$(now_iso)"
+			task_set "$task_id" "last_failure_reason" "$failure_class"
+			log_event "WARN" "autopilot: $task_id needs_input (policy class=$failure_class)"
+			continue
+		fi
+
+		if [[ "$policy_action" == "conflict" ]]; then
+			task_set "$task_id" "status" "conflict"
+			task_set "$task_id" "last_failure_reason" "$failure_class"
+			log_event "WARN" "autopilot: $task_id remains conflict (policy class=$failure_class)"
+			continue
+		fi
 
 		# If no AI runner is available, we cannot retry; mark as needs_input.
 		if [[ "$runner" == "none" ]]; then
@@ -543,11 +564,11 @@ _autopilot_retry_failed() {
 			attempts=0
 		fi
 
-		if ((attempts >= retry_limit)); then
+		if ((attempts >= policy_limit)); then
 			task_set "$task_id" "status" "needs_input"
 			task_set "$task_id" "needs_input_at" "$(now_iso)"
-			task_set "$task_id" "last_failure_reason" "retries_exhausted"
-			log_event "WARN" "autopilot: $task_id needs_input (retries exhausted: $attempts/$retry_limit)"
+			task_set "$task_id" "last_failure_reason" "retries_exhausted:$failure_class"
+			log_event "WARN" "autopilot: $task_id needs_input (retries exhausted class=$failure_class: $attempts/$policy_limit)"
 			continue
 		fi
 
@@ -558,15 +579,61 @@ _autopilot_retry_failed() {
 		fi
 
 		local backoff
-		backoff=$((base_backoff * (1 << attempts)))
+		backoff=$((policy_backoff * (1 << attempts)))
 		if ((now_epoch - last_retry < backoff)); then
 			continue
 		fi
 
 		task_set "$task_id" "last_retry_epoch" "$now_epoch"
-		printf '  retrying: %s (attempt %d/%d)\n' "$task_id" $((attempts + 1)) "$retry_limit"
-		(_resume_single "$task_id" "autopilot retry: quality gate failed" 2>&1) | sed 's/^/    /' || true
-	done <<<"$(task_list_ids)"
+		printf '  retrying: %s (class=%s attempt %d/%d)\n' "$task_id" "$failure_class" $((attempts + 1)) "$policy_limit"
+		(_resume_single "$task_id" "autopilot retry ($failure_class)" 2>&1) | sed 's/^/    /' || true
+	done <<<"$(task_list_ids_cached)"
+}
+
+_autopilot_retry_policy() {
+	local failure_class=${1:-quality_gate}
+	local limit backoff action
+
+	case "$failure_class" in
+	needs_input)
+		printf '0 0 needs_input\n'
+		return 0
+		;;
+	merge_conflict)
+		printf '0 0 conflict\n'
+		return 0
+		;;
+	infra_flake)
+		config_get_cached "autopilot_retry_limit_infra" "3" >/dev/null
+		limit=$REPLY
+		config_get_cached "autopilot_retry_backoff_infra" "15" >/dev/null
+		backoff=$REPLY
+		action="retry"
+		;;
+	lint_failure | test_failure | build_failure | quality_gate)
+		config_get_cached "autopilot_retry_limit_quality" "2" >/dev/null
+		limit=$REPLY
+		config_get_cached "autopilot_retry_backoff_quality" "60" >/dev/null
+		backoff=$REPLY
+		action="retry"
+		;;
+	*)
+		config_get_cached "autopilot_retry_limit" "2" >/dev/null
+		limit=$REPLY
+		config_get_cached "autopilot_retry_backoff" "60" >/dev/null
+		backoff=$REPLY
+		action="retry"
+		;;
+	esac
+
+	if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+		limit=2
+	fi
+	if ! [[ "$backoff" =~ ^[0-9]+$ ]]; then
+		backoff=60
+	fi
+
+	printf '%s %s %s\n' "$limit" "$backoff" "$action"
 }
 
 # --- Phase 2: merge done tasks ---
@@ -577,7 +644,7 @@ _autopilot_merge_done() {
 		[[ -z "$task_id" ]] && continue
 		status=$(task_status "$task_id")
 		[[ "$status" == "done" ]] && done_count=$((done_count + 1))
-	done <<<"$(task_list_ids)"
+	done <<<"$(task_list_ids_cached)"
 
 	if ((done_count > 0)); then
 		printf '  merging %d task(s)...\n' "$done_count"
@@ -587,9 +654,40 @@ _autopilot_merge_done() {
 }
 
 # --- Phase 3: spawn ready tasks ---
+_autopilot_effective_parallel() {
+	local max_parallel=$1
+	local failed_count=$2
+	local conflict_count=$3
+	local min_parallel=$4
+
+	if ! [[ "$max_parallel" =~ ^[0-9]+$ ]]; then
+		max_parallel=1
+	fi
+	if ! [[ "$min_parallel" =~ ^[0-9]+$ ]]; then
+		min_parallel=1
+	fi
+	if ((min_parallel < 1)); then
+		min_parallel=1
+	fi
+	if ((min_parallel > max_parallel)); then
+		min_parallel=$max_parallel
+	fi
+
+	local effective=$max_parallel
+	if ((failed_count + conflict_count > 0)); then
+		effective=$((effective - 1))
+	fi
+
+	if ((effective < min_parallel)); then
+		effective=$min_parallel
+	fi
+
+	printf '%s\n' "$effective"
+}
+
 _autopilot_spawn_ready() {
 	local runner=$1
-	local pending=0 running=0
+	local pending=0 running=0 failed_count=0 conflict_count=0
 	local task_id status
 	while IFS= read -r task_id; do
 		[[ -z "$task_id" ]] && continue
@@ -597,15 +695,36 @@ _autopilot_spawn_ready() {
 		case "$status" in
 		pending) pending=$((pending + 1)) ;;
 		running) running=$((running + 1)) ;;
+		failed) failed_count=$((failed_count + 1)) ;;
+		conflict) conflict_count=$((conflict_count + 1)) ;;
 		esac
-	done <<<"$(task_list_ids)"
+	done <<<"$(task_list_ids_cached)"
 
 	local max_parallel
-	max_parallel=$(config_get "max_parallel" "3")
+	config_get_cached "max_parallel" "3" >/dev/null
+	max_parallel=$REPLY
+	local throughput_mode
+	throughput_mode=$(orchd_throughput_mode)
+	local min_parallel
+	config_get_cached "autopilot_min_parallel" "1" >/dev/null
+	min_parallel=$REPLY
 
-	if ((pending > 0)) && ((running < max_parallel)); then
+	local effective_parallel
+	if [[ "$throughput_mode" == "on" ]]; then
+		effective_parallel=$(_autopilot_effective_parallel "$max_parallel" "$failed_count" "$conflict_count" "$min_parallel")
+	else
+		effective_parallel=$max_parallel
+	fi
+
+	if ((pending > 0)) && ((running < effective_parallel)); then
 		if [[ "$runner" == "none" ]]; then
 			die "no AI runner found/configured (needed to spawn pending tasks)"
+		fi
+		if [[ "$throughput_mode" == "on" ]]; then
+			printf '  adaptive parallel: max=%s effective=%s (failed=%s conflict=%s)\n' \
+				"$max_parallel" "$effective_parallel" "$failed_count" "$conflict_count"
+		else
+			printf '  throughput mode: %s (parallel=%s)\n' "$throughput_mode" "$effective_parallel"
 		fi
 		printf '  spawning ready tasks...\n'
 		(_spawn_all_ready "$runner" 2>&1) | sed 's/^/    /' || true
@@ -629,7 +748,7 @@ _autopilot_detect_deadlock() {
 			fi
 			;;
 		esac
-	done <<<"$(task_list_ids)"
+	done <<<"$(task_list_ids_cached)"
 
 	# Not deadlocked if agents are running or tasks are spawnable
 	if ((running > 0)) || $has_spawnable; then
@@ -652,7 +771,7 @@ _autopilot_detect_deadlock() {
 				printf '  deadlock: %s -> needs_input (deps: %s)\n' "$task_id" "$deps"
 				log_event "WARN" "deadlock: $task_id marked needs_input (deps: $deps)"
 			fi
-		done <<<"$(task_list_ids)"
+		done <<<"$(task_list_ids_cached)"
 
 		local merged=0 failed=0 conflict=0 needs_input=0
 		while IFS= read -r task_id; do
@@ -664,7 +783,7 @@ _autopilot_detect_deadlock() {
 			conflict) conflict=$((conflict + 1)) ;;
 			needs_input) needs_input=$((needs_input + 1)) ;;
 			esac
-		done <<<"$(task_list_ids)"
+		done <<<"$(task_list_ids_cached)"
 
 		_autopilot_summary "$merged" "$failed" "$conflict" "$needs_input"
 		return 0
@@ -689,7 +808,7 @@ _autopilot_drain_queue() {
 		case "$status" in
 		pending | running) active_task_count=$((active_task_count + 1)) ;;
 		esac
-	done <<<"$(task_list_ids)"
+	done <<<"$(task_list_ids_cached)"
 
 	local in_progress
 	in_progress=$(queue_in_progress_count)

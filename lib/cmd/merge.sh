@@ -113,6 +113,9 @@ _merge_single() {
 			printf '  orchd merge %s  (retry)\n' "$task_id"
 			log_event "ERROR" "merge conflict: $task_id ($branch -> $base_branch)"
 			task_set "$task_id" "status" "conflict"
+			task_set "$task_id" "failure_class" "merge_conflict"
+			task_set "$task_id" "last_failure_reason" "merge_conflict"
+			metrics_emit "merge.failed" "$task_id" "conflict" "0" '{"failure_class":"merge_conflict"}'
 			return 1
 		fi
 	fi
@@ -145,6 +148,9 @@ _merge_single() {
 			log_event "ERROR" "post-merge regression failed: $task_id"
 			git -C "$PROJECT_ROOT" merge --abort >/dev/null 2>&1 || true
 			task_set "$task_id" "status" "failed"
+			task_set "$task_id" "failure_class" "test_failure"
+			task_set "$task_id" "last_failure_reason" "test_failure"
+			metrics_emit "merge.failed" "$task_id" "failed" "0" '{"failure_class":"test_failure"}'
 			return 1
 		fi
 	fi
@@ -166,11 +172,15 @@ _merge_single() {
 		printf '  git commit\n'
 		log_event "ERROR" "merge commit failed: $task_id ($branch -> $base_branch)"
 		task_set "$task_id" "status" "conflict"
+		task_set "$task_id" "failure_class" "merge_conflict"
+		task_set "$task_id" "last_failure_reason" "merge_conflict"
+		metrics_emit "merge.failed" "$task_id" "conflict" "0" '{"failure_class":"merge_conflict"}'
 		return 1
 	fi
 
 	task_set "$task_id" "status" "merged"
 	task_set "$task_id" "merged_at" "$(now_iso)"
+	metrics_emit "merge.completed" "$task_id" "merged" "0" '{}'
 
 	# Memory updates were already staged into the merge commit above.
 

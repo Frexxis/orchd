@@ -30,7 +30,15 @@ type orchState struct {
 	MaxParallel  int         `json:"max_parallel"`
 	Counts       stateCounts `json:"counts"`
 	Ready        readyCounts `json:"ready"`
+	KPI          stateKPI    `json:"kpi"`
 	Tasks        []taskState `json:"tasks"`
+}
+
+type stateKPI struct {
+	MergedTasksPerDay         float64 `json:"merged_tasks_per_day"`
+	CycleTimeP50Seconds       float64 `json:"cycle_time_p50_seconds"`
+	CycleTimeP90Seconds       float64 `json:"cycle_time_p90_seconds"`
+	FirstPassCheckSuccessRate float64 `json:"first_pass_check_success_rate"`
 }
 
 type stateCounts struct {

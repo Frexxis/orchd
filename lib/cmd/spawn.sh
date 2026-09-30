@@ -108,6 +108,7 @@ _spawn_single() {
 
 	# Launch agent
 	if runner_exec "$runner" "$task_id" "$prompt" "$worktree_path"; then
+		metrics_emit "spawn.started" "$task_id" "running" "0" "{}"
 		printf 'spawned: %-20s branch=%-25s runner=%s\n' "$task_id" "$branch" "$runner"
 		log_event "INFO" "task spawned: $task_id (branch=$branch runner=$runner)"
 	else
@@ -115,6 +116,7 @@ _spawn_single() {
 		rm -f "$(task_dir "$task_id")/session" "$(task_dir "$task_id")/started_at"
 		task_set "$task_id" "worktree" ""
 		task_set "$task_id" "status" "failed"
+		metrics_emit "spawn.failed" "$task_id" "failed" "0" "{}"
 		log_event "ERROR" "spawn failed: $task_id (runner=$runner)"
 		die "failed to spawn agent for task: $task_id"
 	fi
@@ -122,48 +124,67 @@ _spawn_single() {
 
 _spawn_all_ready() {
 	local runner=$1
+	cache_tick_begin
 	local max_parallel
-	max_parallel=$(config_get "max_parallel" "3")
+	max_parallel=$(config_get_cached "max_parallel" "3")
 
 	local spawned=0
 	local skipped=0
 	local running=0
+	local candidates=""
+	local throughput_mode
+	throughput_mode=$(orchd_throughput_mode)
 
-	# Count currently running
+	# Count current running tasks and collect ready candidates.
 	local task_id
 	while IFS= read -r task_id; do
 		[[ -z "$task_id" ]] && continue
-		if [[ "$(task_status "$task_id")" == "running" ]]; then
+		local status
+		status=$(task_field_cached "$task_id" "status" "pending")
+		if [[ "$status" == "running" ]]; then
 			running=$((running + 1))
+			continue
 		fi
-	done <<<"$(task_list_ids)"
+
+		if [[ "$status" == "pending" ]]; then
+			if task_is_ready "$task_id"; then
+				local score
+				if [[ "$throughput_mode" == "on" ]]; then
+					score=$(task_score_ready "$task_id")
+				else
+					score=0
+				fi
+				candidates+="$score"$'\t'"$task_id"$'\n'
+			else
+				skipped=$((skipped + 1))
+			fi
+		fi
+	done <<<"$(task_list_ids_cached)"
 
 	printf 'scanning tasks... (max_parallel=%s, currently_running=%s)\n\n' "$max_parallel" "$running"
+	if [[ "$throughput_mode" != "on" ]]; then
+		printf 'throughput mode: %s (priority scoring disabled)\n\n' "$throughput_mode"
+	fi
 
 	local failed=0
-	while IFS= read -r task_id; do
-		[[ -z "$task_id" ]] && continue
+	if [[ -n "$candidates" ]]; then
+		local score
+		while IFS=$'\t' read -r score task_id; do
+			[[ -z "$task_id" ]] && continue
 
-		if ((running + spawned >= max_parallel)); then
-			printf 'max parallel limit reached (%s), stopping\n' "$max_parallel"
-			break
-		fi
+			if ((running + spawned >= max_parallel)); then
+				printf 'max parallel limit reached (%s), stopping\n' "$max_parallel"
+				break
+			fi
 
-		if task_is_ready "$task_id"; then
 			if (_spawn_single "$task_id" "$runner"); then
 				spawned=$((spawned + 1))
 			else
 				printf 'warning: failed to spawn %s, continuing...\n' "$task_id" >&2
 				failed=$((failed + 1))
 			fi
-		else
-			local status
-			status=$(task_status "$task_id")
-			if [[ "$status" == "pending" ]]; then
-				skipped=$((skipped + 1))
-			fi
-		fi
-	done <<<"$(task_list_ids)"
+		done <<<"$(printf '%s' "$candidates" | sort -t $'\t' -k1,1nr -k2,2)"
+	fi
 
 	printf '\nspawned: %d  skipped (waiting for deps): %d  already running: %d' \
 		"$spawned" "$skipped" "$running"
@@ -171,6 +192,8 @@ _spawn_all_ready() {
 		printf '  failed: %d' "$failed"
 	fi
 	printf '\n'
+
+	cache_tick_end
 }
 
 _build_kickoff_prompt() {

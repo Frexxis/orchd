@@ -83,6 +83,8 @@ For fully autonomous project development:
 - Keep workers scoped: one clear goal per task with concrete acceptance criteria.
 - Use `state --json` as source of truth for "what next".
 - If a task needs user input, keep progress moving on other unblocked tasks.
+- Use throughput controls intentionally: `throughput_mode = off|observe|on` and `orchd check --profile quick|standard|strict`.
+- Track throughput KPIs from `state --json` (`kpi` block) and tune parallelism/retry settings from evidence, not guesswork.
 
 ## Deliverable Expectations
 

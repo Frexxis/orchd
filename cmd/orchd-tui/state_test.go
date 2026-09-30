@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,4 +134,38 @@ func containsLine(content string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestOrchStateParsesKPIBlock(t *testing.T) {
+	raw := []byte(`{
+  "project_root":"/tmp/proj",
+  "base_branch":"main",
+  "worktree_dir":".worktrees",
+  "worker_runner":"codex",
+  "max_parallel":3,
+  "counts":{"total":1,"pending":0,"running":0,"done":0,"merged":1,"failed":0,"conflict":0,"needs_input":0},
+  "ready":{"spawn":0,"check":0,"merge":0},
+  "kpi":{
+    "merged_tasks_per_day":12,
+    "cycle_time_p50_seconds":320,
+    "cycle_time_p90_seconds":700,
+    "first_pass_check_success_rate":87
+  },
+  "tasks":[]
+}`)
+
+	var st orchState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatalf("unmarshal orchState: %v", err)
+	}
+
+	if st.KPI.MergedTasksPerDay != 12 {
+		t.Fatalf("merged/day=%v want=12", st.KPI.MergedTasksPerDay)
+	}
+	if st.KPI.CycleTimeP50Seconds != 320 {
+		t.Fatalf("p50=%v want=320", st.KPI.CycleTimeP50Seconds)
+	}
+	if st.KPI.FirstPassCheckSuccessRate != 87 {
+		t.Fatalf("first-pass=%v want=87", st.KPI.FirstPassCheckSuccessRate)
+	}
 }

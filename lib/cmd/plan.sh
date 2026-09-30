@@ -337,6 +337,9 @@ _parse_plan_output() {
 		TASK:*) keyword="TASK" ;;
 		TITLE:*) keyword="TITLE" ;;
 		ROLE:*) keyword="ROLE" ;;
+		SIZE:*) keyword="SIZE" ;;
+		RISK:*) keyword="RISK" ;;
+		FILE_HINTS:*) keyword="FILE_HINTS" ;;
 		DEPS:*) keyword="DEPS" ;;
 		DESCRIPTION:*) keyword="DESCRIPTION" ;;
 		ACCEPTANCE:*) keyword="ACCEPTANCE" ;;
@@ -370,6 +373,24 @@ _parse_plan_output() {
 				;;
 			ROLE)
 				[[ -n "$current_id" ]] && task_set "$current_id" "role" "$val"
+				;;
+			SIZE)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "size" "$val"
+				;;
+			RISK)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "risk" "$val"
+				;;
+			FILE_HINTS)
+				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then
+					val=""
+				fi
+				[[ -n "$current_id" ]] && task_set "$current_id" "file_hints" "$val"
 				;;
 			DEPS)
 				if [[ "$val" == "none" ]] || [[ -z "$val" ]]; then

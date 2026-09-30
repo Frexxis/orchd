@@ -29,6 +29,11 @@ Optional per-task quality commands (use when the project is multi-stack or task-
 - TEST_CMD: shell command to test this task's area
 - BUILD_CMD: shell command to build this task's area
 
+Optional throughput metadata (recommended):
+- SIZE: xs | s | m | l (prefer xs/s)
+- RISK: low | med | high
+- FILE_HINTS: comma-separated paths likely touched by this task
+
 If you include these, keep them short and runnable from the repo root.
 
 Output ONLY in this exact format, one task per block, separated by blank lines:
@@ -41,6 +46,9 @@ DESCRIPTION: <what to implement>
 ACCEPTANCE: <testable acceptance criteria>
 
 [optional]
+SIZE: <xs|s|m|l or "none">
+RISK: <low|med|high or "none">
+FILE_HINTS: <comma-separated paths or "none">
 LINT_CMD: <lint command or "none">
 TEST_CMD: <test command or "none">
 BUILD_CMD: <build command or "none">
@@ -48,6 +56,8 @@ BUILD_CMD: <build command or "none">
 Rules:
 - Order tasks so that independent ones come first
 - Maximize parallelism: keep dependencies minimal
+- Keep tasks small: target 2-6 files per task and avoid broad cross-cutting scopes
+- Minimize merge conflicts: avoid assigning overlapping file groups to parallel tasks
 - Include at least one quality task (tests, linting)
 - Include an ops task if CI/CD or deployment is relevant
 - Keep tasks focused: each should be completable by a single agent

@@ -100,7 +100,7 @@ orchd merge --all
 | `orchd tui [--project <dir>]` | Rich interactive terminal UI (multi-panel + live logs) |
 | `orchd state [--json]` | Print a snapshot of task state (machine-friendly) |
 | `orchd await [--all\|<task>]` | Block until a task changes or an agent exits |
-| `orchd check <task\|--all>` | Run quality gates (lint, test, build, task report) |
+| `orchd check [--profile <quick\|standard\|strict>] <task\|--all>` | Run quality gates (lint, test, build, task report) |
 | `orchd merge <task\|--all>` | Merge completed tasks in dependency order |
 | `orchd autopilot [poll_seconds]` | Fully autonomous: spawn/check/merge loop |
 | `orchd autopilot --continuous [poll_seconds]` | Fully autonomous until the project is complete (ideate → plan → execute) |
@@ -228,6 +228,8 @@ base_branch = "main"
 
 [orchestrator]
 max_parallel = 3           # max concurrent agents
+throughput_mode = "on"    # off | observe | on
+autopilot_min_parallel = 1 # lower bound for adaptive parallelism
 worktree_dir = ".worktrees"
 monitor_interval = 30      # monitor daemon tick (legacy)
 board_refresh = 5          # orchd board --watch refresh seconds
@@ -239,6 +241,7 @@ runner = "claude"          # or: codex, opencode, aider, custom
 lint_cmd = "npm run lint"  # run during orchd check
 test_cmd = "npm test"      # run during orchd check
 build_cmd = "npm run build"
+profile = "standard"       # quick | standard | strict
 
 [ideate]
 max_ideas = 5                    # max ideas per ideate call
@@ -266,6 +269,13 @@ max_consecutive_failures = 3       # stop if ideate fails this many times in a r
 | `autopilot_max_iterations` | 0 | Max autopilot iterations (0 = unlimited) |
 | `autopilot_retry_limit` | 2 | Max retries per failed task |
 | `autopilot_retry_backoff` | 60 | Base backoff (seconds) between retries |
+| `autopilot_retry_limit_infra` | 3 | Retry limit for `infra_flake` failures |
+| `autopilot_retry_backoff_infra` | 15 | Backoff base for `infra_flake` failures |
+| `autopilot_retry_limit_quality` | 2 | Retry limit for lint/test/build failures |
+| `autopilot_retry_backoff_quality` | 60 | Backoff base for lint/test/build failures |
+| `autopilot_min_parallel` | 1 | Lower bound for adaptive parallelism |
+| `throughput_mode` | on | Throughput feature switch (`off`, `observe`, `on`) |
+| `quality.profile` | standard | Quality gate profile (`quick`, `standard`, `strict`) |
 | `await_poll` | 5 | Poll interval for `orchd await` |
 | `await_timeout` | 0 | Timeout for `orchd await` (0 = no limit) |
 
@@ -311,6 +321,8 @@ orchd/
 ├── orchestrator-runbook.md        # Comprehensive orchestration runbook
 ├── tests/config_get.sh            # Config parser regression tests
 ├── tests/smoke.sh                 # End-to-end smoke tests
+├── tests/throughput_smoke.sh      # Throughput behavior smoke tests
+├── docs/metrics.md                # Throughput KPI dictionary and rollout guide
 ├── .github/workflows/ci.yml       # CI: ShellCheck + config/smoke tests (Ubuntu/macOS)
 ├── LICENSE
 └── README.md
@@ -339,6 +351,17 @@ Core principles, roles, agent CLI standards, prompt contracts, launch sequences,
 6. **`orchd resume`** re-launches an agent for an existing task/worktree with a continuation prompt (useful after a failed check).
 
 7. **`orchd autopilot`** combines all of the above: spawn ready tasks, poll until agents finish, check quality gates, retry failed tasks (bounded + backoff), merge in DAG order, spawn newly unblocked tasks. When all tasks reach a terminal state (`merged`/`failed`/`needs_input`/`conflict`) or deadlock, it drains the idea queue. With `--continuous`, it then runs `orchd ideate` to generate new work until the AI outputs `PROJECT_COMPLETE`.
+
+## Throughput Controls
+
+`orchd` includes throughput-oriented controls for faster delivery:
+
+- **Ready queue scoring:** prioritize smaller, lower-risk ready tasks.
+- **Adaptive parallelism:** auto-adjust effective concurrency when failures/conflicts increase.
+- **Failure-class retry policy:** classify failures (`infra_flake`, `lint_failure`, `test_failure`, `build_failure`, `needs_input`, `merge_conflict`) and apply class-specific retry behavior.
+- **Quality profiles:** run checks with `quick`, `standard`, or `strict` via `orchd check --profile <name>`.
+
+See `docs/metrics.md` for KPI definitions and rollout guidance.
 
 ## Memory Bank
 

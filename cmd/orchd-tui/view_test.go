@@ -97,3 +97,41 @@ func TestViewKeepsHeaderVisibleWithVeryLongDetailContent(t *testing.T) {
 		}
 	}
 }
+
+func TestStatsViewportShowsThroughputKPI(t *testing.T) {
+	m, err := newModel(appConfig{projectDir: ".", themeName: "dark", showSplash: false})
+	if err != nil {
+		t.Fatalf("newModel: %v", err)
+	}
+
+	m.state = orchState{
+		ProjectRoot:  "/tmp/project",
+		BaseBranch:   "main",
+		WorkerRunner: "codex",
+		MaxParallel:  3,
+		Counts: stateCounts{
+			Total:  4,
+			Merged: 2,
+		},
+		KPI: stateKPI{
+			MergedTasksPerDay:         9,
+			CycleTimeP50Seconds:       180,
+			CycleTimeP90Seconds:       420,
+			FirstPassCheckSuccessRate: 75,
+		},
+		Tasks: []taskState{{ID: "t1", Role: "domain"}},
+	}
+	m.width = 120
+	m.height = 36
+	m.resizeViewports()
+
+	m.refreshStatsViewport()
+	out := m.statsViewport.View()
+
+	checks := []string{"Throughput KPI", "Merged/day:", "Cycle p50 (s):", "First-pass %:"}
+	for _, needle := range checks {
+		if !strings.Contains(out, needle) {
+			t.Fatalf("expected stats viewport to contain %q", needle)
+		}
+	}
+}
